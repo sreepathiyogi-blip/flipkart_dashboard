@@ -307,8 +307,25 @@ def main():
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
     html,body,.main,.stApp{background:#0a0a14!important;font-family:'Inter',sans-serif!important;color:#e8e8f0!important}
     .block-container{padding:1.5rem 2rem!important;max-width:1400px!important}
-    section[data-testid="stSidebar"]{background:linear-gradient(180deg,#0d0d1f,#111128)!important;
-        min-width:270px!important;max-width:270px!important}
+
+    /* ── FORCE SIDEBAR ALWAYS VISIBLE ── */
+    section[data-testid="stSidebar"]{
+        background:linear-gradient(180deg,#0d0d1f,#111128)!important;
+        min-width:270px!important;
+        max-width:270px!important;
+        transform:translateX(0px)!important;
+        visibility:visible!important;
+        display:block!important;
+    }
+    section[data-testid="stSidebar"][aria-expanded="false"]{
+        min-width:270px!important;
+        margin-left:0!important;
+        transform:translateX(0px)!important;
+    }
+    /* Hide the collapse/expand toggle button */
+    button[data-testid="baseButton-headerNoPadding"]{display:none!important}
+    [data-testid="collapsedControl"]{display:none!important}
+
     .stButton>button{background:linear-gradient(135deg,#6C3483,#9B59B6)!important;color:white!important;
         border:none!important;border-radius:8px!important;font-weight:600!important;padding:.5rem 1.2rem!important}
     .stButton>button:hover{background:linear-gradient(135deg,#7D3C98,#AF7AC5)!important;
@@ -422,6 +439,17 @@ def main():
         for label, anchor in nav_items:
             nav_html += f"<a href='#{anchor}' style='display:block;padding:7px 12px;margin:3px 0;color:#C39BD3;text-decoration:none;font-size:13px;font-weight:500;border-radius:8px;background:rgba(108,52,131,0.08)'>{label}</a>"
         st.markdown(nav_html, unsafe_allow_html=True)
+
+    # ── SIDEBAR OPEN HINT ────────────────────────────────────────────────────
+    st.markdown("""
+    <div style='background:#1a1a35;border:1px solid #6C3483;border-radius:10px;
+                padding:10px 18px;margin-bottom:16px;display:flex;align-items:center;gap:10px'>
+        <span style='font-size:22px'>👈</span>
+        <span style='font-size:13px;color:#C39BD3'>
+            <b>Filters & Upload</b> are in the sidebar on the left.
+            If you can't see it, click the <b style='color:#fff'>&gt;</b> arrow at the very top-left of this page.
+        </span>
+    </div>""", unsafe_allow_html=True)
 
     # ── APPLY ALL FILTERS — THIS IS THE KEY FIX ───────────────────────────────
     # Step 1: date filter on master data
