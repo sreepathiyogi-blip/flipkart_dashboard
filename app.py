@@ -75,8 +75,19 @@ def get_or_create_sheet(client, name):
 
 def clean_df(df):
     for col in df.columns:
+        # Try numeric conversion first for non-object columns
         if df[col].dtype == object or str(df[col].dtype) == "string":
-            df[col] = df[col].fillna("").astype(str)
+            # Check if the column is truly string or mixed
+            non_null = df[col].dropna()
+            if len(non_null) == 0:
+                df[col] = df[col].fillna("")
+            else:
+                # Try to see if it is numeric
+                try:
+                    converted = pd.to_numeric(non_null, errors="raise")
+                    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).replace([float("inf"),float("-inf")],0)
+                except (ValueError, TypeError):
+                    df[col] = df[col].fillna("").astype(str)
         else:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).replace([float("inf"),float("-inf")],0)
     return df
@@ -350,10 +361,14 @@ def render_channel_section(df, channel_name, anchor):
     bg["Cancel Rate %"] = (bg["Cancellation"]/(bg["Final_Sale"]+bg["Cancellation"]).replace(0,np.nan)*100).round(1)
     ca, cb = st.columns([3,2])
     with ca:
-        st.plotly_chart(px.bar(bg,x="Brand",y=["Final_Sale","Cancellation","Returns"],barmode="group",
+        fig_chb = px.bar(bg,x="Brand",y=["Final_Sale","Cancellation","Returns"],barmode="group",
             template="plotly_dark",title=f"{channel_name}: Brand-wise Sale vs Cancel vs Returns",
             color_discrete_map={"Final_Sale":"#6C3483","Cancellation":"#e74c3c","Returns":"#e67e22"},
-            labels={"value":"₹","variable":"Metric"}), use_container_width=True)
+            labels={"value":"₹","variable":"Metric"})
+        max_chb = bg[["Final_Sale","Cancellation","Returns"]].max().max() if not bg.empty else 1
+        ticks_chb = [max_chb*i/5 for i in range(6)]
+        fig_chb.update_yaxes(tickvals=ticks_chb, ticktext=["₹"+indian_fmt(v) for v in ticks_chb])
+        st.plotly_chart(fig_chb, use_container_width=True)
     with cb:
         st.plotly_chart(px.pie(bg,values="Final_Sale",names="Brand",title=f"{channel_name}: Sale Share",
             template="plotly_dark",color_discrete_sequence=px.colors.sequential.Purples_r), use_container_width=True)
@@ -372,29 +387,65 @@ def render_channel_section(df, channel_name, anchor):
                       "DoD Cancel %":"{:.1f}%","Returns (₹)":"₹{:,.0f}","DoD Return %":"{:.1f}%","Units":"{:,.0f}"},
                      pct_cols=["DoD Sale %","DoD Cancel %","DoD Return %"])
 
+def apply_indian_yaxis(fig, max_val=None, secondary=False):
+    """Apply Indian number format to plotly y-axis ticks"""
+    if max_val is None or max_val == 0:
+        return fig
+    ticks = [max_val * i / 5 for i in range(7)]
+    labels = ["₹" + indian_fmt(v) for v in ticks]
+    fig.update_yaxes(tickvals=ticks, ticktext=labels)
+    return fig
+
+def ind_px_bar(df, **kwargs):
+    """px.bar with Indian y-axis format"""
+    fig = px.bar(df, **kwargs)
+    y_col = kwargs.get("y")
+    if isinstance(y_col, str) and y_col in df.columns:
+        max_v = df[y_col].max()
+    elif isinstance(y_col, list):
+        max_v = df[y_col].max().max()
+    else:
+        max_v = None
+    if max_v and max_v > 0:
+        ticks = [max_v * i / 5 for i in range(7)]
+        fig.update_yaxes(tickvals=ticks, ticktext=["₹"+indian_fmt(v) for v in ticks])
+    fig.update_traces(hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>")
+    return fig
+
+def ind_px_line(df, **kwargs):
+    """px.line with Indian y-axis format"""
+    fig = px.line(df, **kwargs)
+    y_col = kwargs.get("y")
+    if isinstance(y_col, str) and y_col in df.columns:
+        max_v = df[y_col].max()
+        if max_v and max_v > 0:
+            ticks = [max_v * i / 5 for i in range(7)]
+            fig.update_yaxes(tickvals=ticks, ticktext=["₹"+indian_fmt(v) for v in ticks])
+    return fig
+
 def main():
     st.markdown("""<style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
     html,body,.main,.stApp{background:#0a0a14!important;font-family:'Inter',sans-serif!important;color:#e8e8f0!important}
     .block-container{padding:1.5rem 2rem!important;max-width:1400px!important}
 
-    /* ── FORCE SIDEBAR ALWAYS VISIBLE ── */
+    /* ── SIDEBAR ── */
     section[data-testid="stSidebar"]{
         background:linear-gradient(180deg,#0d0d1f,#111128)!important;
         min-width:270px!important;
         max-width:270px!important;
-        transform:translateX(0px)!important;
-        visibility:visible!important;
-        display:block!important;
     }
-    section[data-testid="stSidebar"][aria-expanded="false"]{
-        min-width:270px!important;
-        margin-left:0!important;
-        transform:translateX(0px)!important;
+    /* Style the collapse toggle button — make it visible and clean */
+    button[data-testid="baseButton-headerNoPadding"]{
+        background:#1a1a35!important;
+        border:1px solid #2a2a4a!important;
+        border-radius:6px!important;
+        color:#C39BD3!important;
     }
-    /* Hide the collapse/expand toggle button */
-    button[data-testid="baseButton-headerNoPadding"]{display:none!important}
-    [data-testid="collapsedControl"]{display:none!important}
+    [data-testid="collapsedControl"]{
+        background:#1a1a35!important;
+        border-right:1px solid #2a2a4a!important;
+    }
 
     .stButton>button{background:linear-gradient(135deg,#6C3483,#9B59B6)!important;color:white!important;
         border:none!important;border-radius:8px!important;font-weight:600!important;padding:.5rem 1.2rem!important}
@@ -537,8 +588,6 @@ def main():
             df = df[df["Category"] == cat_f]
 
     # Step 3: date-only df for channel-level and brand-level overview (not brand/cat filtered)
-    df_channel = df_dated.copy()  # used for National vs Shopsy overview
-    if brand_f != "All": df_channel = df_channel[df_channel["Brand"] == brand_f]
 
     dates = sorted(df["Order Date"].unique())
     has_wow = df["Order Date"].dt.to_period("W").nunique() >= 2
@@ -594,10 +643,16 @@ def main():
     ch_grp["Cancel Rate %"]=(ch_grp["Cancellation"]/(ch_grp["Final_Sale"]+ch_grp["Cancellation"]).replace(0,np.nan)*100).round(1)
     ca,cb=st.columns(2)
     with ca:
-        st.plotly_chart(px.bar(ch_grp,x="Channel",y=["Final_Sale","Cancellation","Returns"],
+        fig_ch = px.bar(ch_grp,x="Channel",y=["Final_Sale","Cancellation","Returns"],
             barmode="group",template="plotly_dark",title="National vs Shopsy: Sale, Cancel, Returns",
             color_discrete_map={"Final_Sale":"#6C3483","Cancellation":"#e74c3c","Returns":"#e67e22"},
-            labels={"value":"₹","variable":"Metric"}), use_container_width=True)
+            labels={"value":"₹","variable":"Metric"})
+        max_v = ch_grp[["Final_Sale","Cancellation","Returns"]].max().max() if not ch_grp.empty else 1
+        
+        fig_ch.update_yaxes(tickvals=[v for v in __import__("numpy").linspace(0,max_v,6)],
+                            ticktext=["₹"+indian_fmt(v) for v in __import__("numpy").linspace(0,max_v,6)])
+        fig_ch.update_traces(hovertemplate="<b>%{x}</b><br>₹%{y:,.0f}<extra></extra>")
+        st.plotly_chart(fig_ch, use_container_width=True)
     with cb:
         st.plotly_chart(px.pie(ch_grp,values="Final_Sale",names="Channel",
             title="Sale Share: National vs Shopsy",template="plotly_dark",
@@ -608,9 +663,17 @@ def main():
     # Brand-wise — uses df (fully filtered)
     st.markdown("<div style='background:rgba(108,52,131,0.12);border:1px solid #2a2a4a;border-radius:12px;padding:11px 18px;margin:20px 0 8px 0'><span style='font-size:15px;font-weight:700;color:#D7BDE2'>🏷️ Brand-wise Performance</span></div>", unsafe_allow_html=True)
     bg=df.groupby(["Brand","Channel"]).agg(Final_Sale=("Final Sale Amount","sum")).reset_index()
-    st.plotly_chart(px.bar(bg,x="Brand",y="Final_Sale",color="Channel",barmode="group",
-        template="plotly_dark",title="Brand-wise Final Sale by Channel",
-        color_discrete_map=CHANNEL_COLORS,labels={"Final_Sale":"Final Sale (₹)"}), use_container_width=True)
+    bg["Final_Sale_Fmt"] = bg["Final_Sale"].apply(indian_fmt)
+    fig_bg = px.bar(bg, x="Brand", y="Final_Sale", color="Channel", barmode="group",
+        template="plotly_dark", title="Brand-wise Final Sale by Channel",
+        color_discrete_map=CHANNEL_COLORS,
+        labels={"Final_Sale":"Final Sale (₹)"},
+        custom_data=["Final_Sale_Fmt","Channel"])
+    fig_bg.update_traces(hovertemplate="<b>%{customdata[1]}</b><br>₹%{customdata[0]}<extra></extra>")
+    max_val = bg["Final_Sale"].max() if not bg.empty else 1
+    ticks = [max_val * i / 5 for i in range(6)]
+    fig_bg.update_yaxes(tickvals=ticks, ticktext=["₹"+indian_fmt(v) for v in ticks])
+    st.plotly_chart(fig_bg, use_container_width=True)
     bg2=df.groupby("Brand").agg(Final_Sale=("Final Sale Amount","sum"),Cancellation=("Cancellation Amount","sum"),
         Returns=("Return Amount","sum"),Units=("Final Sale Units","sum")).reset_index().sort_values("Final_Sale",ascending=False)
     bg2["Cancel Rate %"]=(bg2["Cancellation"]/(bg2["Final_Sale"]+bg2["Cancellation"]).replace(0,np.nan)*100).round(1)
@@ -622,7 +685,7 @@ def main():
     st.plotly_chart(combined_chart(daily_agg(df),"Order Date","Daily: Final Sale (Bar) | Cancel & Returns (Line)"), use_container_width=True)
     dt_ch = df.copy(); dt_ch["Order Date"]=pd.to_datetime(dt_ch["Order Date"])
     dt_ch = dt_ch.groupby(["Order Date","Channel"]).agg(Final_Sale=("Final Sale Amount","sum")).reset_index()
-    st.plotly_chart(px.line(dt_ch,x="Order Date",y="Final_Sale",color="Channel",
+    st.plotly_chart(ind_px_line(dt_ch,x="Order Date",y="Final_Sale",color="Channel",
         title="Daily Final Sale: National vs Shopsy",template="plotly_dark",
         color_discrete_map=CHANNEL_COLORS,labels={"Final_Sale":"Final Sale (₹)"}), use_container_width=True)
 
@@ -644,17 +707,17 @@ def main():
         tg=bv.groupby("Type").agg(Final_Sale=("Final Sale Amount","sum"),Cancellation=("Cancellation Amount","sum"),Returns=("Return Amount","sum"),Units=("Final Sale Units","sum")).reset_index()
         c1,c2=st.columns(2)
         with c1:
-            st.plotly_chart(px.bar(tg,x="Type",y=["Final_Sale","Cancellation","Returns"],barmode="group",
+            st.plotly_chart(ind_px_bar(tg,x="Type",y=["Final_Sale","Cancellation","Returns"],barmode="group",
                 template="plotly_dark",title="Fragrance vs Non-Frag",
                 color_discrete_map={"Final_Sale":"#6C3483","Cancellation":"#e74c3c","Returns":"#e67e22"}), use_container_width=True)
         with c2:
             st.plotly_chart(px.pie(tg,values="Final_Sale",names="Type",title="Sale Share",template="plotly_dark"), use_container_width=True)
         tg_ch=bv.groupby(["Type","Channel"]).agg(Final_Sale=("Final Sale Amount","sum")).reset_index()
-        st.plotly_chart(px.bar(tg_ch,x="Type",y="Final_Sale",color="Channel",barmode="group",
+        st.plotly_chart(ind_px_bar(tg_ch,x="Type",y="Final_Sale",color="Channel",barmode="group",
             template="plotly_dark",title="Fragrance vs Non-Frag by Channel",
             color_discrete_map=CHANNEL_COLORS,labels={"Final_Sale":"Final Sale (₹)"}), use_container_width=True)
         dt2=bv.groupby(["Order Date","Type"]).agg(Final_Sale=("Final Sale Amount","sum")).reset_index()
-        st.plotly_chart(px.line(dt2,x="Order Date",y="Final_Sale",color="Type",
+        st.plotly_chart(ind_px_line(dt2,x="Order Date",y="Final_Sale",color="Type",
             title="Daily: Fragrance vs Non-Fragrance",template="plotly_dark"), use_container_width=True)
         cg=bv.groupby(["Type","Category"]).agg(Final_Sale=("Final Sale Amount","sum"),Cancellation=("Cancellation Amount","sum")).reset_index().sort_values("Final_Sale",ascending=False)
         cg["Cancel Rate %"]=(cg["Cancellation"]/(cg["Final_Sale"]+cg["Cancellation"]).replace(0,np.nan)*100).round(1)
@@ -713,7 +776,8 @@ def main():
     if dec.empty: st.info("Need at least 2 weeks of data.")
     else:
         st.plotly_chart(px.bar(dec.head(15),x="SKU ID",y="Change %",color="Brand",template="plotly_dark",
-                               title="Top Declining SKUs (WoW %)",color_discrete_map=BRAND_COLORS), use_container_width=True)
+                               title="Top Declining SKUs (WoW %)",color_discrete_map=BRAND_COLORS,
+                               labels={"Change %":"WoW Change %"}), use_container_width=True)
         cols_show=[c for c in ["SKU ID","Brand","Category","Channel","Prev Week","Last Week","Change %"] if c in dec.columns]
         render_table(dec[cols_show],{"Prev Week":"₹{:,.0f}","Last Week":"₹{:,.0f}","Change %":"{:.1f}%"},pct_cols=["Change %"])
 
