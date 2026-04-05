@@ -13,7 +13,7 @@ st.set_page_config(
     page_title="Flipkart Sales Dashboard",
     page_icon="🛒",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
     menu_items={"Get Help": None, "Report a bug": None, "About": "One Guardian — Flipkart Sales Dashboard"}
 )
 
@@ -461,15 +461,7 @@ def main():
         width:28px!important;
         height:60px!important;
     }
-    section[data-testid="stSidebar"][aria-expanded="false"]{
-        width:0!important;
-        min-width:0!important;
-        overflow:hidden!important;
-        transition:all 0.3s ease!important;
-    }
-    section[data-testid="stSidebar"][aria-expanded="true"]{
-        width:270px!important;
-        min-width:270px!important;
+    section[data-testid="stSidebar"]{
         transition:all 0.3s ease!important;
     }
 
@@ -586,8 +578,7 @@ def main():
         for label, anchor in nav_items:
             nav_html += f"<a href='#{anchor}' style='display:block;padding:7px 12px;margin:3px 0;color:#C39BD3;text-decoration:none;font-size:13px;font-weight:500;border-radius:8px;background:rgba(108,52,131,0.08)'>{label}</a>"
         st.markdown(nav_html, unsafe_allow_html=True)
-
-
+    
     # ── APPLY ALL FILTERS — THIS IS THE KEY FIX ───────────────────────────────
     # Step 1: date filter on master data
     df_all["Order Date"] = pd.to_datetime(df_all["Order Date"])
