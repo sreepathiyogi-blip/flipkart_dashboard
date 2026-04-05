@@ -79,6 +79,7 @@ def append_to_gsheet(client, new_df, spreadsheet_name="Flipkart_Sales_DB"):
     existing_data = ws.get_all_records()
     if not existing_data:
         # First upload — write headers + data
+        new_df = new_df.fillna("").replace([float('inf'), float('-inf')], 0)
         ws.update([new_df.columns.tolist()] + new_df.astype(str).values.tolist())
         return len(new_df), 0
 
@@ -97,6 +98,7 @@ def append_to_gsheet(client, new_df, spreadsheet_name="Flipkart_Sales_DB"):
 
     combined = pd.concat([existing_df, truly_new], ignore_index=True)
     combined["Order Date"] = combined["Order Date"].dt.strftime("%Y-%m-%d")
+    combined = combined.fillna("").replace([float('inf'), float('-inf')], 0)
     ws.clear()
     ws.update([combined.columns.tolist()] + combined.astype(str).values.tolist())
     return len(truly_new), len(new_df) - len(truly_new)
@@ -303,6 +305,12 @@ def main():
                     for col in ["GMV", "Cancellation Amount", "Return Amount", "Final Sale Amount",
                                 "Gross Units", "Cancellation Units", "Return Units", "Final Sale Units"]:
                         raw[col] = pd.to_numeric(raw[col], errors="coerce").fillna(0)
+                    # Fill NaN in all remaining columns to avoid JSON errors
+                    for col in raw.columns:
+                        if raw[col].dtype == object:
+                            raw[col] = raw[col].fillna("").astype(str)
+                        else:
+                            raw[col] = raw[col].fillna(0)
 
                     st.success(f"✅ File read: {len(raw)} rows | Dates: {raw['Order Date'].min()} → {raw['Order Date'].max()}")
                     if st.button("💾 Save to Google Sheets"):
