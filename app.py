@@ -432,7 +432,7 @@ def main():
     st.markdown("""<style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
     html,body,.main,.stApp{background:#0a0a14!important;font-family:'Inter',sans-serif!important;color:#e8e8f0!important}
-    .block-container{padding:1.5rem 2rem!important;max-width:1400px!important}
+    .block-container{padding:1.5rem 2rem!important;max-width:100%!important;transition:all 0.3s ease!important}
 
     /* ── SIDEBAR ── */
     section[data-testid="stSidebar"]{
@@ -450,6 +450,24 @@ def main():
     [data-testid="collapsedControl"]{
         background:#1a1a35!important;
         border-right:1px solid #2a2a4a!important;
+        display:flex!important;
+        visibility:visible!important;
+        opacity:1!important;
+    }
+    [data-testid="collapsedControl"] button{
+        background:#6C3483!important;
+        color:white!important;
+        border-radius:0 8px 8px 0!important;
+        width:28px!important;
+        height:60px!important;
+    }
+    section[data-testid="stSidebar"][aria-expanded="false"]{
+        margin-left:-270px!important;
+        transition:margin 0.3s ease!important;
+    }
+    section[data-testid="stSidebar"][aria-expanded="true"]{
+        margin-left:0!important;
+        transition:margin 0.3s ease!important;
     }
 
     .stButton>button{background:linear-gradient(135deg,#6C3483,#9B59B6)!important;color:white!important;
@@ -630,7 +648,9 @@ def main():
         with c2: metric_card("Today's Cancellation",tc,pct_badge(safe_pct(tc,yc),inverse=True))
         with c3: metric_card("Today's Returns",tr,pct_badge(safe_pct(tr,yr),inverse=True))
         with c4: metric_card("Cancel Rate",cr,prefix="",suffix="%")
-        with c5: metric_card("Total Sale (Period)",df["Final Sale Amount"].sum())
+        current_month = pd.Timestamp.now().to_period("M")
+        df_cm = df[pd.to_datetime(df["Order Date"]).dt.to_period("M") == current_month]
+        with c5: metric_card("Current Month Sale", df_cm["Final Sale Amount"].sum())
 
     # Channel split — uses df (fully filtered)
     st.markdown("<div style='background:linear-gradient(90deg,rgba(46,134,193,0.12),rgba(230,126,34,0.12));border:1px solid #2a2a4a;border-radius:12px;padding:11px 18px;margin:20px 0 8px 0'><span style='font-size:15px;font-weight:700;color:#D7BDE2'>📡 National vs Shopsy — Total Period</span></div>", unsafe_allow_html=True)
