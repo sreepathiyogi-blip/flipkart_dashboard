@@ -1,0 +1,100 @@
+# Flipkart Sales Dashboard — Setup Guide
+
+## Folder Structure
+```
+flipkart_dashboard/
+├── app.py
+├── requirements.txt
+├── .streamlit/
+│   └── secrets.toml          ← you create this (see below)
+└── .gitignore
+```
+
+---
+
+## Step 1: Install Python packages
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## Step 2: Set up Google Sheets as Database
+
+### A. Create a Google Cloud Project
+1. Go to https://console.cloud.google.com/
+2. Create a new project (e.g. "Flipkart Dashboard")
+3. Enable these two APIs:
+   - **Google Sheets API**
+   - **Google Drive API**
+
+### B. Create a Service Account
+1. Go to **IAM & Admin → Service Accounts**
+2. Click **Create Service Account**
+3. Give it a name (e.g. `flipkart-dashboard`)
+4. Click **Create and Continue**
+5. Skip role assignment → click **Done**
+6. Click on the service account → **Keys tab** → **Add Key → JSON**
+7. Download the JSON file
+
+### C. Configure secrets.toml
+Create `.streamlit/secrets.toml` in your project folder and paste the contents from the downloaded JSON:
+
+```toml
+[gcp_service_account]
+type = "service_account"
+project_id = "your-project-id"
+private_key_id = "abc123..."
+private_key = "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----\n"
+client_email = "flipkart-dashboard@your-project.iam.gserviceaccount.com"
+client_id = "123456789"
+auth_uri = "https://accounts.google.com/o/oauth2/auth"
+token_uri = "https://oauth2.googleapis.com/token"
+auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+client_x509_cert_url = "https://www.googleapis.com/robot/v1/..."
+universe_domain = "googleapis.com"
+```
+
+### D. Share the Google Sheet with Service Account
+The app auto-creates the sheet and shares it with the service account.  
+If you get permission errors, manually share the sheet with the `client_email` address above and give it **Editor** access.
+
+---
+
+## Step 3: Run the Dashboard
+```bash
+streamlit run app.py
+```
+
+---
+
+## Daily Workflow
+1. Download the **Earn More Report** from Flipkart Seller Hub
+2. Open the dashboard → sidebar → Upload file
+3. Click **"Save to Google Sheets"**
+4. Dashboard auto-updates with new data
+
+---
+
+## Features
+| Feature | Details |
+|---|---|
+| **Daily Upload** | Upload any Flipkart Earn More XLSX — deduplication prevents double-counting |
+| **Google Sheets DB** | All data stored in Google Sheets, accessible anywhere |
+| **Brand Filter** | Filter all views by brand |
+| **Overview** | Today's sale/cancel/return KPIs with DoD comparison |
+| **DoD Analysis** | Day-on-Day charts and % change table |
+| **WoW Analysis** | Week-on-Week charts and % change table |
+| **MoM Analysis** | Month-on-Month (auto-activates when 2+ months of data present) |
+| **Declining SKUs** | Top SKUs losing GMV WoW — ready for action |
+| **Action Points** | AI-style dynamic recommendations based on your data |
+
+---
+
+## .gitignore (create this file)
+```
+.streamlit/secrets.toml
+__pycache__/
+*.pyc
+.env
+```
