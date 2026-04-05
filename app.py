@@ -134,6 +134,7 @@ def save_data(client, new_df, spreadsheet_name):
                           truly_new.reindex(columns=all_cols, fill_value="")], ignore_index=True)
     combined["Order Date"] = pd.to_datetime(combined["Order Date"], errors="coerce").dt.strftime("%Y-%m-%d")
     combined = clean_df(combined)
+    combined = combined.sort_values("Order Date", ascending=False)
     ws.clear()
     ws.update([combined.columns.tolist()] + combined.astype(str).values.tolist())
     return len(truly_new), len(new_df) - len(truly_new)
