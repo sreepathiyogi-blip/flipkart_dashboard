@@ -474,7 +474,8 @@ def main():
         background:#13132a!important;border:1px solid #2a2a4a!important;color:white!important;border-radius:8px!important}
     .stFileUploader>div{background:#13132a!important;border:2px dashed #2a2a4a!important;border-radius:10px!important}
     section[data-testid="stSidebar"] label,section[data-testid="stSidebar"] p{color:#aaa!important}
-    #MainMenu,footer,header{visibility:hidden}
+    #MainMenu,footer{visibility:hidden}
+    header{visibility:visible!important}
     ::-webkit-scrollbar{width:6px;height:6px}
     ::-webkit-scrollbar-thumb{background:#2a2a4a;border-radius:3px}
     ::-webkit-scrollbar-thumb:hover{background:#6C3483}
