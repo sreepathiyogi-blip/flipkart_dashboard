@@ -322,7 +322,7 @@ def action_points(df):
     sg=df.groupby("SKU ID").agg(sale=("Final Sale Amount","sum"),cancel=("Cancellation Amount","sum"))
     sg["cr"]=sg["cancel"]/(sg["sale"]+sg["cancel"]).replace(0,np.nan)
     bad=sg[(sg["cr"]>0.3)&(sg["sale"]>1000)]
-    if not bad.empty: actions.append(f"⚠️ **{len(bad)} SKUs with >30% cancel rate**: {", ".join(bad.index.astype(str)[:3].tolist())}")
+    if not bad.empty: actions.append(f"⚠️ **{len(bad)} SKUs with >30% cancel rate**: {', '.join(bad.index.astype(str)[:3].tolist())}")
     months=sorted(df["Order Date"].dt.to_period("M").unique())
     if len(months)>=2:
         m1=df[df["Order Date"].dt.to_period("M")==months[-1]]["Final Sale Amount"].sum()
@@ -461,7 +461,10 @@ def main():
         background:#13132a!important;border:1px solid #2a2a4a!important;color:white!important;border-radius:8px!important}
     .stFileUploader>div{background:#13132a!important;border:2px dashed #2a2a4a!important;border-radius:10px!important}
     section[data-testid="stSidebar"] label,section[data-testid="stSidebar"] p{color:#aaa!important}
-    #MainMenu,footer,header{visibility:hidden}
+    
+    #MainMenu, footer {visibility: hidden;} /* Removed header from hidden list */
+    header {background: transparent !important;} /* Makes the top bar invisible but leaves the button clickable */
+
     ::-webkit-scrollbar{width:6px;height:6px}
     ::-webkit-scrollbar-thumb{background:#2a2a4a;border-radius:3px}
     ::-webkit-scrollbar-thumb:hover{background:#6C3483}
@@ -646,8 +649,8 @@ def main():
             labels={"value":"₹","variable":"Metric"})
         max_v = ch_grp[["Final_Sale","Cancellation","Returns"]].max().max() if not ch_grp.empty else 1
         
-        fig_ch.update_yaxes(tickvals=[v for v in __import__("numpy").linspace(0,max_v,6)],
-                            ticktext=["₹"+indian_fmt(v) for v in __import__("numpy").linspace(0,max_v,6)])
+        fig_ch.update_yaxes(tickvals=[v for v in np.linspace(0,max_v,6)],
+                            ticktext=["₹"+indian_fmt(v) for v in np.linspace(0,max_v,6)])
         fig_ch.update_traces(hovertemplate="<b>%{x}</b><br>₹%{y:,.0f}<extra></extra>")
         st.plotly_chart(fig_ch, use_container_width=True)
     with cb:
