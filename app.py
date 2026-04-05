@@ -9,8 +9,13 @@ from plotly.subplots import make_subplots
 import warnings
 warnings.filterwarnings("ignore")
 
-st.set_page_config(page_title="Flipkart Sales Dashboard", page_icon="🛒", layout="wide",
-                   initial_sidebar_state="expanded")
+st.set_page_config(
+    page_title="Flipkart Sales Dashboard",
+    page_icon="🛒",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={"Get Help": None, "Report a bug": None, "About": "One Guardian — Flipkart Sales Dashboard"}
+)
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
 REQUIRED_COLS = ["Product Id","SKU ID","Category","Brand","Vertical","Order Date","Fulfillment Type",
@@ -463,29 +468,6 @@ def main():
     </style>""", unsafe_allow_html=True)
 
     # ── SIDEBAR ───────────────────────────────────────────────────────────────
-    # Auto-open sidebar on page load
-    st.markdown("""
-    <script>
-    (function() {
-        function openSidebar() {
-            var sidebar = window.parent.document.querySelector('section[data-testid="stSidebar"]');
-            if (sidebar) {
-                var expanded = sidebar.getAttribute('aria-expanded');
-                if (expanded === 'false') {
-                    var btn = window.parent.document.querySelector('[data-testid="collapsedControl"]') ||
-                              window.parent.document.querySelector('button[data-testid="baseButton-headerNoPadding"]');
-                    if (btn) btn.click();
-                }
-            }
-        }
-        // Try immediately and after delays to handle Streamlit load timing
-        setTimeout(openSidebar, 500);
-        setTimeout(openSidebar, 1000);
-        setTimeout(openSidebar, 2000);
-    })();
-    </script>
-    """, unsafe_allow_html=True)
-
     with st.sidebar:
         st.markdown("""<div style='text-align:center;padding:16px 0 8px 0'>
             <div style='font-size:26px'>🛒</div>
@@ -584,29 +566,8 @@ def main():
             nav_html += f"<a href='#{anchor}' style='display:block;padding:7px 12px;margin:3px 0;color:#C39BD3;text-decoration:none;font-size:13px;font-weight:500;border-radius:8px;background:rgba(108,52,131,0.08)'>{label}</a>"
         st.markdown(nav_html, unsafe_allow_html=True)
 
-    # ── SIDEBAR OPEN HINT ────────────────────────────────────────────────────
-    st.markdown("""
-    <div style='background:#1a1a35;border:1px solid #6C3483;border-radius:10px;
-                padding:12px 18px;margin-bottom:16px;display:flex;align-items:center;
-                justify-content:space-between;gap:10px'>
-        <div style='display:flex;align-items:center;gap:10px'>
-            <span style='font-size:22px'>👈</span>
-            <span style='font-size:13px;color:#C39BD3'>
-                <b style='color:#fff'>Filters & Upload</b> are in the sidebar on the left.
-                If hidden, click the <b style='color:#FFD700'>&gt;</b> arrow at the very top-left corner of this page to open it.
-            </span>
-        </div>
-        <button onclick="
-            var btn = window.parent.document.querySelector('[data-testid=\"baseButton-headerNoPadding\"]') ||
-                      window.parent.document.querySelector('[data-testid=\"collapsedControl\"]') ||
-                      window.parent.document.querySelector('button[kind=\"header\"]');
-            if(btn) btn.click();
-        " style='background:#6C3483;color:white;border:none;border-radius:8px;
-                  padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;
-                  white-space:nowrap;flex-shrink:0'>
-            ☰ Open Sidebar
-        </button>
-    </div>""", unsafe_allow_html=True)
+    # ── SIDEBAR HINT ─────────────────────────────────────────────────────────
+    st.info("👈 **Filters & Upload are in the sidebar on the left.** Click the **>** arrow at the top-left of this page if you cannot see it.")
 
     # ── APPLY ALL FILTERS — THIS IS THE KEY FIX ───────────────────────────────
     # Step 1: date filter on master data
