@@ -433,6 +433,12 @@ def main():
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
     html,body,.main,.stApp{background:#0a0a14!important;font-family:'Inter',sans-serif!important;color:#e8e8f0!important}
     .block-container{padding:1.5rem 2rem!important;max-width:100%!important;transition:all 0.3s ease!important}
+    section[data-testid="stSidebar"][aria-expanded="true"] ~ .main .block-container{
+        max-width:calc(100% - 270px)!important;
+    }
+    section[data-testid="stSidebar"][aria-expanded="false"] ~ .main .block-container{
+        max-width:100%!important;
+    }
 
     /* ── SIDEBAR ── */
     section[data-testid="stSidebar"]{
@@ -475,7 +481,8 @@ def main():
     .stFileUploader>div{background:#13132a!important;border:2px dashed #2a2a4a!important;border-radius:10px!important}
     section[data-testid="stSidebar"] label,section[data-testid="stSidebar"] p{color:#aaa!important}
     #MainMenu,footer{visibility:hidden}
-    header{visibility:visible!important}
+    header{visibility:visible!important;background:transparent!important;box-shadow:none!important}
+    header [data-testid="stToolbar"]{visibility:hidden}
     ::-webkit-scrollbar{width:6px;height:6px}
     ::-webkit-scrollbar-thumb{background:#2a2a4a;border-radius:3px}
     ::-webkit-scrollbar-thumb:hover{background:#6C3483}
