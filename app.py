@@ -462,12 +462,15 @@ def main():
         height:60px!important;
     }
     section[data-testid="stSidebar"][aria-expanded="false"]{
-        margin-left:-270px!important;
-        transition:margin 0.3s ease!important;
+        width:0!important;
+        min-width:0!important;
+        overflow:hidden!important;
+        transition:all 0.3s ease!important;
     }
     section[data-testid="stSidebar"][aria-expanded="true"]{
-        margin-left:0!important;
-        transition:margin 0.3s ease!important;
+        width:270px!important;
+        min-width:270px!important;
+        transition:all 0.3s ease!important;
     }
 
     .stButton>button{background:linear-gradient(135deg,#6C3483,#9B59B6)!important;color:white!important;
