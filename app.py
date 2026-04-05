@@ -507,6 +507,10 @@ def main():
     ::-webkit-scrollbar{width:6px;height:6px}
     ::-webkit-scrollbar-thumb{background:#2a2a4a;border-radius:3px}
     ::-webkit-scrollbar-thumb:hover{background:#6C3483}
+    section[data-testid="stSidebar"] > div:first-child{
+        overflow-y:auto!important;
+        max-height:100vh!important;
+    }
     </style>""", unsafe_allow_html=True)
 
     # ── SIDEBAR ───────────────────────────────────────────────────────────────
