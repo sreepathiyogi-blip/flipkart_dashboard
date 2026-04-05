@@ -112,15 +112,31 @@ def pct_badge(pct, inverse=False):
 
 def metric_card(label, val, delta="", prefix="₹", suffix=""):
     vs = f"{prefix}{val:,.0f}{suffix}"
-    st.markdown(f"""<div style='background:#1a1a2e;padding:14px 18px;border-radius:10px;
-        border-left:4px solid #6C3483;margin-bottom:6px'>
-        <div style='color:#aaa;font-size:11px'>{label}</div>
-        <div style='color:#fff;font-size:20px;font-weight:700'>{vs}</div>
-        <div style='font-size:11px;margin-top:3px'>{delta}</div></div>""", unsafe_allow_html=True)
+    st.markdown(f"""
+    <div style='background:linear-gradient(135deg,#13132a,#1a1a35);
+                padding:18px 20px;border-radius:14px;
+                border:1px solid #2a2a4a;
+                border-left:4px solid #6C3483;
+                margin-bottom:8px;
+                box-shadow:0 4px 20px rgba(0,0,0,0.3);
+                transition:all 0.2s ease;'>
+        <div style='color:#8888aa;font-size:11px;font-weight:500;
+                    letter-spacing:0.5px;text-transform:uppercase;
+                    margin-bottom:6px'>{label}</div>
+        <div style='color:#ffffff;font-size:22px;font-weight:800;
+                    letter-spacing:-0.5px;margin-bottom:4px'>{vs}</div>
+        <div style='font-size:12px;margin-top:2px'>{delta}</div>
+    </div>""", unsafe_allow_html=True)
 
 def sec_hdr(title, anchor):
-    st.markdown(f"<h2 id='{anchor}' style='color:#D7BDE2;border-bottom:2px solid #6C3483;"
-                f"padding-bottom:6px;margin-top:30px'>{title}</h2>", unsafe_allow_html=True)
+    st.markdown(f"""
+    <div id='{anchor}' style='margin-top:40px;margin-bottom:20px'>
+        <h2 style='color:#D7BDE2;font-size:22px;font-weight:700;
+                   margin:0;padding-bottom:10px;
+                   border-bottom:2px solid;
+                   border-image:linear-gradient(90deg,#6C3483,#2E86C1) 1;
+                   letter-spacing:-0.3px'>{title}</h2>
+    </div>""", unsafe_allow_html=True)
 
 def combined_chart(data, x, title):
     fig = make_subplots(specs=[[{"secondary_y":True}]])
@@ -322,13 +338,109 @@ def render_channel_section(df, channel_name, anchor):
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 def main():
     st.markdown("""<style>
-    .main,.stApp{background:#0f0f1a;color:white}
-    .block-container{padding-top:1rem}
-    div[data-testid="stSidebarContent"]{background:#12122a}
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+    html, body, .main, .stApp {
+        background: #0a0a14 !important;
+        font-family: 'Inter', sans-serif !important;
+        color: #e8e8f0 !important;
+    }
+    .block-container {
+        padding: 1.5rem 2rem 2rem 2rem !important;
+        max-width: 1400px !important;
+    }
+    div[data-testid="stSidebarContent"] {
+        background: linear-gradient(180deg, #0d0d1f 0%, #111128 100%) !important;
+        border-right: 1px solid #1e1e3a !important;
+    }
+    /* Metric cards */
+    div[data-testid="metric-container"] {
+        background: #13132a;
+        border-radius: 12px;
+        border: 1px solid #1e1e3a;
+        padding: 10px;
+    }
+    /* Plotly charts */
+    .js-plotly-plot {
+        border-radius: 12px !important;
+        overflow: hidden !important;
+    }
+    /* Dataframe */
+    div[data-testid="stDataFrame"] {
+        border-radius: 10px !important;
+        overflow: hidden !important;
+        border: 1px solid #1e1e3a !important;
+    }
+    /* Buttons */
+    .stButton > button {
+        background: linear-gradient(135deg, #6C3483, #9B59B6) !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        padding: 0.5rem 1.2rem !important;
+        transition: all 0.2s ease !important;
+    }
+    .stButton > button:hover {
+        background: linear-gradient(135deg, #7D3C98, #AF7AC5) !important;
+        transform: translateY(-1px) !important;
+        box-shadow: 0 4px 15px rgba(108,52,131,0.4) !important;
+    }
+    /* Sidebar links */
+    a { color: #A569BD !important; text-decoration: none !important; }
+    a:hover { color: #D7BDE2 !important; }
+    /* Expander */
+    details { border: 1px solid #1e1e3a !important; border-radius: 10px !important; }
+    /* Input fields */
+    .stTextInput > div > div > input {
+        background: #13132a !important;
+        border: 1px solid #2a2a4a !important;
+        color: white !important;
+        border-radius: 8px !important;
+    }
+    /* Selectbox */
+    .stSelectbox > div > div {
+        background: #13132a !important;
+        border: 1px solid #2a2a4a !important;
+        border-radius: 8px !important;
+        color: white !important;
+    }
+    /* Date input */
+    .stDateInput > div > div > input {
+        background: #13132a !important;
+        border: 1px solid #2a2a4a !important;
+        color: white !important;
+        border-radius: 8px !important;
+    }
+    /* File uploader */
+    .stFileUploader > div {
+        background: #13132a !important;
+        border: 2px dashed #2a2a4a !important;
+        border-radius: 10px !important;
+    }
+    /* Success/info/error */
+    .stSuccess { border-radius: 8px !important; }
+    .stInfo { border-radius: 8px !important; }
+    .stError { border-radius: 8px !important; }
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0a0a14; }
+    ::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #6C3483; }
+    /* Hide streamlit branding */
+    #MainMenu, footer, header { visibility: hidden; }
     </style>""", unsafe_allow_html=True)
 
     with st.sidebar:
-        st.markdown("## 🛒 Flipkart Dashboard\n**One Guardian**")
+        st.markdown("""
+        <div style='text-align:center;padding:16px 0 8px 0'>
+            <div style='font-size:26px'>🛒</div>
+            <div style='font-size:17px;font-weight:800;color:#D7BDE2;
+                        letter-spacing:-0.3px'>Flipkart Dashboard</div>
+            <div style='font-size:11px;color:#6666aa;font-weight:500;
+                        letter-spacing:1px;text-transform:uppercase;
+                        margin-top:3px'>One Guardian</div>
+        </div>""", unsafe_allow_html=True)
         st.markdown("---")
         spreadsheet_name = st.text_input("Google Sheet Name", "Flipkart_Sales_DB")
 
@@ -435,9 +547,18 @@ def main():
         if brand_f == "Bellavita": nav_items.insert(1,("🌸 Fragrance vs Non-Frag","fragrance"))
         excl_col = next((c for c in df_raw.columns if "exclusive" in c.lower()), None)
         if excl_col: nav_items.append(("⭐ Exclusives","exclusives"))
+        nav_html = ""
         for label, anchor in nav_items:
-            st.markdown(f"<a href='#{anchor}' style='color:#A569BD;text-decoration:none;font-size:13px'>→ {label}</a>",
-                        unsafe_allow_html=True)
+            nav_html += f"""
+            <a href='#{anchor}' style='display:block;padding:7px 12px;margin:3px 0;
+                color:#C39BD3;text-decoration:none;font-size:13px;font-weight:500;
+                border-radius:8px;border:1px solid transparent;
+                transition:all 0.2s ease;background:rgba(108,52,131,0.08)'
+                onmouseover="this.style.background='rgba(108,52,131,0.25)';this.style.borderColor='rgba(108,52,131,0.4)'"
+                onmouseout="this.style.background='rgba(108,52,131,0.08)';this.style.borderColor='transparent'">
+                {label}
+            </a>"""
+        st.markdown(nav_html, unsafe_allow_html=True)
 
     # ── APPLY ALL FILTERS ─────────────────────────────────────────────────────
     df = df_raw.copy()
@@ -456,15 +577,45 @@ def main():
     has_mom = disp["Order Date"].dt.to_period("M").nunique()>=2
 
     # ── HEADER ────────────────────────────────────────────────────────────────
-    st.title(f"🛒 Flipkart Dashboard — {brand_f} | {channel_f}")
-    if dates:
-        ch_counts = df["Channel"].value_counts()
-        st.caption(
-            f"📅 {dates[0].strftime('%d %b %Y')} → {dates[-1].strftime('%d %b %Y')} | "
-            f"{len(disp):,} rows | "
-            f"🏪 National: {ch_counts.get('National',0):,} | "
-            f"🛍️ Shopsy: {ch_counts.get('Shopsy',0):,}"
-        )
+    # ── HERO BANNER ──────────────────────────────────────────────────────────
+    ch_counts = df["Channel"].value_counts() if not df.empty else {}
+    date_str = f"{dates[0].strftime('%d %b %Y')} → {dates[-1].strftime('%d %b %Y')}" if dates else "—"
+    st.markdown(f"""
+    <div style='background:linear-gradient(135deg,#1a0a2e 0%,#0d1a3a 50%,#0a1a20 100%);
+                border-radius:16px;padding:28px 32px;margin-bottom:24px;
+                border:1px solid #2a2a4a;
+                box-shadow:0 8px 32px rgba(0,0,0,0.4)'>
+        <div style='display:flex;align-items:center;gap:12px;margin-bottom:8px'>
+            <span style='font-size:32px'>🛒</span>
+            <div>
+                <div style='font-size:26px;font-weight:800;color:#ffffff;
+                            letter-spacing:-0.5px;line-height:1.1'>
+                    Flipkart Sales Dashboard
+                </div>
+                <div style='font-size:13px;color:#8888bb;font-weight:500;margin-top:2px'>
+                    One Guardian · {brand_f} · {channel_f} Channel
+                </div>
+            </div>
+        </div>
+        <div style='display:flex;gap:20px;flex-wrap:wrap;margin-top:14px'>
+            <div style='background:rgba(108,52,131,0.2);border:1px solid rgba(108,52,131,0.4);
+                        border-radius:8px;padding:6px 14px;font-size:12px;color:#D7BDE2;font-weight:600'>
+                📅 {date_str}
+            </div>
+            <div style='background:rgba(46,134,193,0.2);border:1px solid rgba(46,134,193,0.4);
+                        border-radius:8px;padding:6px 14px;font-size:12px;color:#85C1E9;font-weight:600'>
+                🏪 National: {ch_counts.get("National",0):,} rows
+            </div>
+            <div style='background:rgba(230,126,34,0.2);border:1px solid rgba(230,126,34,0.4);
+                        border-radius:8px;padding:6px 14px;font-size:12px;color:#F0B27A;font-weight:600'>
+                🛍️ Shopsy: {ch_counts.get("Shopsy",0):,} rows
+            </div>
+            <div style='background:rgba(46,204,113,0.15);border:1px solid rgba(46,204,113,0.3);
+                        border-radius:8px;padding:6px 14px;font-size:12px;color:#82E0AA;font-weight:600'>
+                📊 {len(disp):,} rows filtered
+            </div>
+        </div>
+    </div>""", unsafe_allow_html=True)
 
     # ════════════════════════════════════════════════════════════════════
     # 1. OVERVIEW
@@ -488,7 +639,7 @@ def main():
         with c5: metric_card("Total Sale (Period)",disp["Final Sale Amount"].sum())
 
     # Channel split KPIs
-    st.markdown("#### 📡 National vs Shopsy — Total Period")
+    st.markdown("<div style='background:linear-gradient(90deg,rgba(46,134,193,0.12),rgba(230,126,34,0.12));border:1px solid #2a2a4a;border-radius:12px;padding:11px 18px;margin:20px 0 8px 0'><span style='font-size:15px;font-weight:700;color:#D7BDE2'>📡 National vs Shopsy — Total Period</span></div>", unsafe_allow_html=True)
     ch_grp = df.groupby("Channel").agg(
         Final_Sale=("Final Sale Amount","sum"),
         Cancellation=("Cancellation Amount","sum"),
@@ -511,7 +662,7 @@ def main():
                  {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Returns (₹)":"₹{:,.0f}","Units Sold":"{:,.0f}","Cancel Rate %":"{:.1f}%"})
 
     # Brand-wise
-    st.markdown("#### 🏷️ Brand-wise Performance")
+    st.markdown("<div style='background:rgba(108,52,131,0.12);border:1px solid #2a2a4a;border-radius:12px;padding:11px 18px;margin:20px 0 8px 0'><span style='font-size:15px;font-weight:700;color:#D7BDE2'>🏷️ Brand-wise Performance</span></div>", unsafe_allow_html=True)
     bg=df.groupby(["Brand","Channel"]).agg(Final_Sale=("Final Sale Amount","sum"),Cancellation=("Cancellation Amount","sum"),Returns=("Return Amount","sum")).reset_index()
     st.plotly_chart(px.bar(bg,x="Brand",y="Final_Sale",color="Channel",barmode="group",
         template="plotly_dark",title="Brand-wise Final Sale by Channel",
@@ -523,7 +674,7 @@ def main():
                  {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Returns (₹)":"₹{:,.0f}","Units Sold":"{:,.0f}","Cancel Rate %":"{:.1f}%"})
 
     # Daily trend
-    st.markdown("#### 📈 Daily Trend")
+    st.markdown("<div style='background:rgba(46,204,113,0.08);border:1px solid #2a2a4a;border-radius:12px;padding:11px 18px;margin:20px 0 8px 0'><span style='font-size:15px;font-weight:700;color:#D7BDE2'>📈 Daily Trend</span></div>", unsafe_allow_html=True)
     st.plotly_chart(combined_chart(daily_agg(disp),"Order Date",
                     "Daily: Final Sale (Bar) | Cancel & Returns (Line)"), use_container_width=True)
 
