@@ -253,6 +253,18 @@ def main():
             st.stop()
 
         st.markdown("---\n### 🔍 Filters")
+
+        # Date filter
+        df_raw["Order Date"] = pd.to_datetime(df_raw["Order Date"])
+        min_date = df_raw["Order Date"].min().date()
+        max_date = df_raw["Order Date"].max().date()
+        date_range = st.date_input("📅 Date Range", value=(min_date, max_date), min_value=min_date, max_value=max_date)
+        if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+            start_date, end_date = date_range[0], date_range[1]
+        else:
+            start_date, end_date = min_date, max_date
+        df_raw = df_raw[(df_raw["Order Date"].dt.date >= start_date) & (df_raw["Order Date"].dt.date <= end_date)]
+
         brands = ["All"] + sorted(df_raw["Brand"].dropna().unique().tolist())
         brand_f = st.selectbox("Brand", brands)
 
