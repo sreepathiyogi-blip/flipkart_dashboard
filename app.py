@@ -128,7 +128,8 @@ def render_table(df, fmt, pct_cols=[]):
     styled = df.style.format(fmt, na_rep="—")
     for col in pct_cols:
         if col in df.columns:
-            styled = styled.applymap(lambda v: pct_color(v), subset=[col])
+            fn = getattr(styled, "map", None) or getattr(styled, "applymap", None)
+            styled = fn(lambda v: pct_color(v), subset=[col])
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
 def daily_agg(df):
