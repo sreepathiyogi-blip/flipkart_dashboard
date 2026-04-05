@@ -78,23 +78,22 @@ def get_or_create_sheet(client, name):
         sh.share(st.secrets["gcp_service_account"]["client_email"], perm_type="user", role="writer")
         return sh
 
+TEXT_COLS = {"Product Id", "SKU ID", "Category", "Brand", "Vertical",
+             "Order Date", "Fulfillment Type", "Location Id", "Channel"}
+
 def clean_df(df):
     for col in df.columns:
-        # Try numeric conversion first for non-object columns
-        if df[col].dtype == object or str(df[col].dtype) == "string":
-            # Check if the column is truly string or mixed
-            non_null = df[col].dropna()
-            if len(non_null) == 0:
-                df[col] = df[col].fillna("")
-            else:
-                # Try to see if it is numeric
-                try:
-                    converted = pd.to_numeric(non_null, errors="raise")
-                    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).replace([float("inf"),float("-inf")],0)
-                except (ValueError, TypeError):
-                    df[col] = df[col].fillna("").astype(str)
-        else:
+        if col in TEXT_COLS:
+            df[col] = df[col].fillna("").astype(str).replace("nan", "").replace("0.0", "")
+        elif col in NUMERIC_COLS:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).replace([float("inf"),float("-inf")],0)
+        else:
+            non_null = df[col].dropna()
+            try:
+                pd.to_numeric(non_null, errors="raise")
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+            except (ValueError, TypeError):
+                df[col] = df[col].fillna("").astype(str)
     return df
 
 @st.cache_data(ttl=300)
@@ -478,10 +477,10 @@ def main():
         spreadsheet_name = st.text_input("Google Sheet Name", "Flipkart_Sales_DB")
 
         st.markdown("### 📤 Upload Data")
-        uploaded = st.file_uploader("Earn More Report (.xlsx)", type=["xlsx","xls"])
+        uploaded = st.file_uploader("Earn More Report (.xlsx / .csv)", type=["xlsx","xls","csv"])
         if uploaded:
             try:
-                raw = pd.read_excel(uploaded)
+                raw = pd.read_csv(uploaded) if uploaded.name.endswith(".csv") else pd.read_excel(uploaded)
                 missing = [c for c in REQUIRED_COLS if c not in raw.columns]
                 if missing: st.error(f"Missing: {missing}")
                 else:
