@@ -9,7 +9,8 @@ from plotly.subplots import make_subplots
 import warnings
 warnings.filterwarnings("ignore")
 
-st.set_page_config(page_title="Flipkart Sales Dashboard", page_icon="🛒", layout="wide")
+st.set_page_config(page_title="Flipkart Sales Dashboard", page_icon="🛒", layout="wide",
+                   initial_sidebar_state="expanded")
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
 REQUIRED_COLS = ["Product Id","SKU ID","Category","Brand","Vertical","Order Date","Fulfillment Type",
@@ -21,7 +22,6 @@ BRAND_COLORS = {"Bellavita":"#6C3483","Kenaz":"#1A5276","Embarouge":"#C0392B","H
 BELLAVITA_NAMES = ["BELLAVITA","Bella vita organic","Bellavita","bella vita","BELLA VITA ORGANIC","bellavita"]
 CHANNEL_COLORS = {"Shopsy":"#E67E22","National":"#2E86C1"}
 
-# ─── NORMALIZERS ──────────────────────────────────────────────────────────────
 def normalize_brands(df):
     df = df.copy()
     df["Brand"] = df["Brand"].astype(str).str.strip()
@@ -29,14 +29,12 @@ def normalize_brands(df):
     return df
 
 def add_channel(df):
-    """Derive Channel from Vertical: starts with 'Shopsy' → Shopsy, else National"""
     df = df.copy()
     df["Channel"] = df["Vertical"].astype(str).apply(
         lambda v: "Shopsy" if v.strip().lower().startswith("shopsy") else "National"
     )
     return df
 
-# ─── GOOGLE SHEETS ────────────────────────────────────────────────────────────
 @st.cache_resource
 def get_gsheet_client():
     creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
@@ -54,7 +52,7 @@ def clean_df(df):
         if df[col].dtype == object or str(df[col].dtype) == "string":
             df[col] = df[col].fillna("").astype(str)
         else:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).replace([float('inf'),float('-inf')],0)
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).replace([float("inf"),float("-inf")],0)
     return df
 
 @st.cache_data(ttl=300)
@@ -91,16 +89,14 @@ def save_data(client, new_df, spreadsheet_name):
     truly_new = new_df[~new_keys.isin(ex_keys)]
     if len(truly_new) == 0: return 0, len(new_df)
     all_cols = list(dict.fromkeys(ex.columns.tolist() + truly_new.columns.tolist()))
-    ex = ex.reindex(columns=all_cols, fill_value="")
-    truly_new = truly_new.reindex(columns=all_cols, fill_value="")
-    combined = pd.concat([ex, truly_new], ignore_index=True)
+    combined = pd.concat([ex.reindex(columns=all_cols, fill_value=""),
+                          truly_new.reindex(columns=all_cols, fill_value="")], ignore_index=True)
     combined["Order Date"] = pd.to_datetime(combined["Order Date"], errors="coerce").dt.strftime("%Y-%m-%d")
     combined = clean_df(combined)
     ws.clear()
     ws.update([combined.columns.tolist()] + combined.astype(str).values.tolist())
     return len(truly_new), len(new_df) - len(truly_new)
 
-# ─── HELPERS ──────────────────────────────────────────────────────────────────
 def safe_pct(new, old): return round((new-old)/old*100,1) if old != 0 else None
 
 def pct_badge(pct, inverse=False):
@@ -113,28 +109,20 @@ def pct_badge(pct, inverse=False):
 def metric_card(label, val, delta="", prefix="₹", suffix=""):
     vs = f"{prefix}{val:,.0f}{suffix}"
     st.markdown(f"""
-    <div style='background:linear-gradient(135deg,#13132a,#1a1a35);
-                padding:18px 20px;border-radius:14px;
-                border:1px solid #2a2a4a;
-                border-left:4px solid #6C3483;
-                margin-bottom:8px;
-                box-shadow:0 4px 20px rgba(0,0,0,0.3);
-                transition:all 0.2s ease;'>
-        <div style='color:#8888aa;font-size:11px;font-weight:500;
-                    letter-spacing:0.5px;text-transform:uppercase;
-                    margin-bottom:6px'>{label}</div>
-        <div style='color:#ffffff;font-size:22px;font-weight:800;
-                    letter-spacing:-0.5px;margin-bottom:4px'>{vs}</div>
+    <div style='background:linear-gradient(135deg,#13132a,#1a1a35);padding:18px 20px;border-radius:14px;
+                border:1px solid #2a2a4a;border-left:4px solid #6C3483;margin-bottom:8px;
+                box-shadow:0 4px 20px rgba(0,0,0,0.3)'>
+        <div style='color:#8888aa;font-size:11px;font-weight:500;letter-spacing:0.5px;
+                    text-transform:uppercase;margin-bottom:6px'>{label}</div>
+        <div style='color:#ffffff;font-size:22px;font-weight:800;letter-spacing:-0.5px;margin-bottom:4px'>{vs}</div>
         <div style='font-size:12px;margin-top:2px'>{delta}</div>
     </div>""", unsafe_allow_html=True)
 
 def sec_hdr(title, anchor):
     st.markdown(f"""
     <div id='{anchor}' style='margin-top:40px;margin-bottom:20px'>
-        <h2 style='color:#D7BDE2;font-size:22px;font-weight:700;
-                   margin:0;padding-bottom:10px;
-                   border-bottom:2px solid;
-                   border-image:linear-gradient(90deg,#6C3483,#2E86C1) 1;
+        <h2 style='color:#D7BDE2;font-size:22px;font-weight:700;margin:0;padding-bottom:10px;
+                   border-bottom:2px solid;border-image:linear-gradient(90deg,#6C3483,#2E86C1) 1;
                    letter-spacing:-0.3px'>{title}</h2>
     </div>""", unsafe_allow_html=True)
 
@@ -168,14 +156,11 @@ def render_table(df, fmt, pct_cols=[]):
             styled = fn(lambda v: pct_color(v), subset=[col])
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
-# ─── AGGREGATIONS ─────────────────────────────────────────────────────────────
 def daily_agg(df):
     df = df.copy(); df["Order Date"] = pd.to_datetime(df["Order Date"])
     return df.groupby("Order Date").agg(
-        Final_Sale=("Final Sale Amount","sum"),
-        Cancellation=("Cancellation Amount","sum"),
-        Returns=("Return Amount","sum"),
-        Sale_Units=("Final Sale Units","sum")
+        Final_Sale=("Final Sale Amount","sum"), Cancellation=("Cancellation Amount","sum"),
+        Returns=("Return Amount","sum"), Sale_Units=("Final Sale Units","sum")
     ).reset_index().sort_values("Order Date")
 
 def dod_data(df):
@@ -188,10 +173,8 @@ def dod_data(df):
 def wow_data(df):
     df = df.copy(); df["Order Date"] = pd.to_datetime(df["Order Date"])
     df["Week"] = df["Order Date"].dt.to_period("W").apply(lambda r: r.start_time)
-    w = df.groupby("Week").agg(
-        Final_Sale=("Final Sale Amount","sum"),
-        Cancellation=("Cancellation Amount","sum"),
-        Returns=("Return Amount","sum")
+    w = df.groupby("Week").agg(Final_Sale=("Final Sale Amount","sum"),
+        Cancellation=("Cancellation Amount","sum"), Returns=("Return Amount","sum")
     ).reset_index().sort_values("Week")
     w["WoW_Sale_%"] = w["Final_Sale"].pct_change()*100
     w["WoW_Cancel_%"] = w["Cancellation"].pct_change()*100
@@ -201,10 +184,8 @@ def wow_data(df):
 def mom_data(df):
     df = df.copy(); df["Order Date"] = pd.to_datetime(df["Order Date"])
     df["Month"] = df["Order Date"].dt.to_period("M").apply(lambda r: r.start_time)
-    m = df.groupby("Month").agg(
-        Final_Sale=("Final Sale Amount","sum"),
-        Cancellation=("Cancellation Amount","sum"),
-        Returns=("Return Amount","sum")
+    m = df.groupby("Month").agg(Final_Sale=("Final Sale Amount","sum"),
+        Cancellation=("Cancellation Amount","sum"), Returns=("Return Amount","sum")
     ).reset_index().sort_values("Month")
     m["MoM_Sale_%"] = m["Final_Sale"].pct_change()*100
     m["MoM_Cancel_%"] = m["Cancellation"].pct_change()*100
@@ -255,23 +236,22 @@ def action_points(df):
     sg=df.groupby("SKU ID").agg(sale=("Final Sale Amount","sum"),cancel=("Cancellation Amount","sum"))
     sg["cr"]=sg["cancel"]/(sg["sale"]+sg["cancel"]).replace(0,np.nan)
     bad=sg[(sg["cr"]>0.3)&(sg["sale"]>1000)]
-    if not bad.empty: actions.append(f"⚠️ **{len(bad)} SKUs with >30% cancel rate**: {', '.join(bad.index.astype(str)[:3].tolist())}")
+    if not bad.empty: actions.append(f"⚠️ **{len(bad)} SKUs with >30% cancel rate**: {", ".join(bad.index.astype(str)[:3].tolist())}")
     months=sorted(df["Order Date"].dt.to_period("M").unique())
     if len(months)>=2:
         m1=df[df["Order Date"].dt.to_period("M")==months[-1]]["Final Sale Amount"].sum()
         m0=df[df["Order Date"].dt.to_period("M")==months[-2]]["Final Sale Amount"].sum()
         mp=safe_pct(m1,m0)
         if mp and mp<-10: actions.append(f"📉 **MoM sales declined {abs(mp):.1f}%**. Review brand contribution & push promos.")
-    # Channel-specific
     if "Channel" in df.columns:
-        ch=df.groupby("Channel")["Final Sale Amount"].sum()
-        for ch_name, ch_val in ch.items():
-            pct_share = ch_val/df["Final Sale Amount"].sum()*100
-            actions.append(f"📊 **{ch_name} channel:** ₹{ch_val:,.0f} ({pct_share:.1f}% of total sale)")
+        total_sale = df["Final Sale Amount"].sum()
+        if total_sale > 0:
+            ch=df.groupby("Channel")["Final Sale Amount"].sum()
+            for ch_name, ch_val in ch.items():
+                actions.append(f"📊 **{ch_name} channel:** ₹{ch_val:,.0f} ({ch_val/total_sale*100:.1f}% of total sale)")
     if not actions: actions.append("✅ All metrics look healthy. Push exclusives scale-up & monitor DoD.")
     return actions
 
-# ─── CHANNEL SECTION ──────────────────────────────────────────────────────────
 def render_channel_section(df, channel_name, anchor):
     ch_df = df[df["Channel"]==channel_name].copy()
     if ch_df.empty:
@@ -279,7 +259,6 @@ def render_channel_section(df, channel_name, anchor):
         return
     st.markdown(f"<div id='{anchor}'></div>", unsafe_allow_html=True)
     sec_hdr(f"{'🛍️' if channel_name=='Shopsy' else '🏪'} {channel_name} Channel", anchor)
-
     dates = sorted(pd.to_datetime(ch_df["Order Date"]).unique())
     td = ch_df[pd.to_datetime(ch_df["Order Date"])==dates[-1]] if dates else pd.DataFrame()
     yd = ch_df[pd.to_datetime(ch_df["Order Date"])==dates[-2]] if len(dates)>=2 else pd.DataFrame()
@@ -290,22 +269,15 @@ def render_channel_section(df, channel_name, anchor):
     yc = yd["Cancellation Amount"].sum() if not yd.empty else 0
     yr = yd["Return Amount"].sum() if not yd.empty else 0
     cr = tc/(ts+tc)*100 if (ts+tc)>0 else 0
-
     c1,c2,c3,c4 = st.columns(4)
     with c1: metric_card(f"Today's Sale ({channel_name})", ts, pct_badge(safe_pct(ts,ys)))
     with c2: metric_card("Cancellation", tc, pct_badge(safe_pct(tc,yc), inverse=True))
     with c3: metric_card("Returns", tr, pct_badge(safe_pct(tr,yr), inverse=True))
     with c4: metric_card("Cancel Rate", cr, prefix="", suffix="%")
-
-    # Brand-wise within channel
-    bg = ch_df.groupby("Brand").agg(
-        Final_Sale=("Final Sale Amount","sum"),
-        Cancellation=("Cancellation Amount","sum"),
-        Returns=("Return Amount","sum"),
-        Units=("Final Sale Units","sum")
-    ).reset_index().sort_values("Final_Sale", ascending=False)
+    bg = ch_df.groupby("Brand").agg(Final_Sale=("Final Sale Amount","sum"),
+        Cancellation=("Cancellation Amount","sum"), Returns=("Return Amount","sum"),
+        Units=("Final Sale Units","sum")).reset_index().sort_values("Final_Sale", ascending=False)
     bg["Cancel Rate %"] = (bg["Cancellation"]/(bg["Final_Sale"]+bg["Cancellation"]).replace(0,np.nan)*100).round(1)
-
     ca, cb = st.columns([3,2])
     with ca:
         st.plotly_chart(px.bar(bg,x="Brand",y=["Final_Sale","Cancellation","Returns"],barmode="group",
@@ -315,15 +287,10 @@ def render_channel_section(df, channel_name, anchor):
     with cb:
         st.plotly_chart(px.pie(bg,values="Final_Sale",names="Brand",title=f"{channel_name}: Sale Share",
             template="plotly_dark",color_discrete_sequence=px.colors.sequential.Purples_r), use_container_width=True)
-
     render_table(bg.rename(columns={"Final_Sale":"Final Sale (₹)","Cancellation":"Cancel (₹)","Returns":"Returns (₹)","Units":"Units Sold"}),
                  {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Returns (₹)":"₹{:,.0f}","Units Sold":"{:,.0f}","Cancel Rate %":"{:.1f}%"})
-
-    # Daily trend
     st.plotly_chart(combined_chart(daily_agg(ch_df),"Order Date",
                     f"{channel_name}: Daily Final Sale (Bar) | Cancel & Returns (Line)"), use_container_width=True)
-
-    # DoD table
     with st.expander(f"📅 {channel_name} DoD % Change Table"):
         dod = dod_data(ch_df)
         dd = dod.copy(); dd["Order Date"] = dd["Order Date"].dt.strftime("%d %b %Y")
@@ -335,111 +302,34 @@ def render_channel_section(df, channel_name, anchor):
                       "DoD Cancel %":"{:.1f}%","Returns (₹)":"₹{:,.0f}","DoD Return %":"{:.1f}%","Units":"{:,.0f}"},
                      pct_cols=["DoD Sale %","DoD Cancel %","DoD Return %"])
 
-# ─── MAIN ─────────────────────────────────────────────────────────────────────
 def main():
     st.markdown("""<style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-
-    html, body, .main, .stApp {
-        background: #0a0a14 !important;
-        font-family: 'Inter', sans-serif !important;
-        color: #e8e8f0 !important;
-    }
-    .block-container {
-        padding: 1.5rem 2rem 2rem 2rem !important;
-        max-width: 1400px !important;
-    }
-    div[data-testid="stSidebarContent"] {
-        background: linear-gradient(180deg, #0d0d1f 0%, #111128 100%) !important;
-        border-right: 1px solid #1e1e3a !important;
-    }
-    /* Metric cards */
-    div[data-testid="metric-container"] {
-        background: #13132a;
-        border-radius: 12px;
-        border: 1px solid #1e1e3a;
-        padding: 10px;
-    }
-    /* Plotly charts */
-    .js-plotly-plot {
-        border-radius: 12px !important;
-        overflow: hidden !important;
-    }
-    /* Dataframe */
-    div[data-testid="stDataFrame"] {
-        border-radius: 10px !important;
-        overflow: hidden !important;
-        border: 1px solid #1e1e3a !important;
-    }
-    /* Buttons */
-    .stButton > button {
-        background: linear-gradient(135deg, #6C3483, #9B59B6) !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 8px !important;
-        font-weight: 600 !important;
-        padding: 0.5rem 1.2rem !important;
-        transition: all 0.2s ease !important;
-    }
-    .stButton > button:hover {
-        background: linear-gradient(135deg, #7D3C98, #AF7AC5) !important;
-        transform: translateY(-1px) !important;
-        box-shadow: 0 4px 15px rgba(108,52,131,0.4) !important;
-    }
-    /* Sidebar links */
-    a { color: #A569BD !important; text-decoration: none !important; }
-    a:hover { color: #D7BDE2 !important; }
-    /* Expander */
-    details { border: 1px solid #1e1e3a !important; border-radius: 10px !important; }
-    /* Input fields */
-    .stTextInput > div > div > input {
-        background: #13132a !important;
-        border: 1px solid #2a2a4a !important;
-        color: white !important;
-        border-radius: 8px !important;
-    }
-    /* Selectbox */
-    .stSelectbox > div > div {
-        background: #13132a !important;
-        border: 1px solid #2a2a4a !important;
-        border-radius: 8px !important;
-        color: white !important;
-    }
-    /* Date input */
-    .stDateInput > div > div > input {
-        background: #13132a !important;
-        border: 1px solid #2a2a4a !important;
-        color: white !important;
-        border-radius: 8px !important;
-    }
-    /* File uploader */
-    .stFileUploader > div {
-        background: #13132a !important;
-        border: 2px dashed #2a2a4a !important;
-        border-radius: 10px !important;
-    }
-    /* Success/info/error */
-    .stSuccess { border-radius: 8px !important; }
-    .stInfo { border-radius: 8px !important; }
-    .stError { border-radius: 8px !important; }
-    /* Scrollbar */
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: #0a0a14; }
-    ::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: #6C3483; }
-    /* Hide streamlit branding */
-    #MainMenu, footer, header { visibility: hidden; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+    html,body,.main,.stApp{background:#0a0a14!important;font-family:'Inter',sans-serif!important;color:#e8e8f0!important}
+    .block-container{padding:1.5rem 2rem!important;max-width:1400px!important}
+    section[data-testid="stSidebar"]{background:linear-gradient(180deg,#0d0d1f,#111128)!important;
+        min-width:270px!important;max-width:270px!important}
+    .stButton>button{background:linear-gradient(135deg,#6C3483,#9B59B6)!important;color:white!important;
+        border:none!important;border-radius:8px!important;font-weight:600!important;padding:.5rem 1.2rem!important}
+    .stButton>button:hover{background:linear-gradient(135deg,#7D3C98,#AF7AC5)!important;
+        box-shadow:0 4px 15px rgba(108,52,131,0.4)!important}
+    div[data-testid="stDataFrame"]{border-radius:10px!important;overflow:hidden!important;border:1px solid #1e1e3a!important}
+    .stTextInput>div>div>input,.stSelectbox>div>div,.stDateInput>div>div>input{
+        background:#13132a!important;border:1px solid #2a2a4a!important;color:white!important;border-radius:8px!important}
+    .stFileUploader>div{background:#13132a!important;border:2px dashed #2a2a4a!important;border-radius:10px!important}
+    section[data-testid="stSidebar"] label,section[data-testid="stSidebar"] p{color:#aaa!important}
+    #MainMenu,footer,header{visibility:hidden}
+    ::-webkit-scrollbar{width:6px;height:6px}
+    ::-webkit-scrollbar-thumb{background:#2a2a4a;border-radius:3px}
+    ::-webkit-scrollbar-thumb:hover{background:#6C3483}
     </style>""", unsafe_allow_html=True)
 
+    # ── SIDEBAR ───────────────────────────────────────────────────────────────
     with st.sidebar:
-        st.markdown("""
-        <div style='text-align:center;padding:16px 0 8px 0'>
+        st.markdown("""<div style='text-align:center;padding:16px 0 8px 0'>
             <div style='font-size:26px'>🛒</div>
-            <div style='font-size:17px;font-weight:800;color:#D7BDE2;
-                        letter-spacing:-0.3px'>Flipkart Dashboard</div>
-            <div style='font-size:11px;color:#6666aa;font-weight:500;
-                        letter-spacing:1px;text-transform:uppercase;
-                        margin-top:3px'>One Guardian</div>
+            <div style='font-size:17px;font-weight:800;color:#D7BDE2'>Flipkart Dashboard</div>
+            <div style='font-size:11px;color:#6666aa;letter-spacing:1px;text-transform:uppercase;margin-top:3px'>One Guardian</div>
         </div>""", unsafe_allow_html=True)
         st.markdown("---")
         spreadsheet_name = st.text_input("Google Sheet Name", "Flipkart_Sales_DB")
@@ -453,179 +343,139 @@ def main():
                 if missing: st.error(f"Missing: {missing}")
                 else:
                     raw["Order Date"] = pd.to_datetime(raw["Order Date"],errors="coerce").dt.strftime("%Y-%m-%d")
-                    raw = clean_df(raw)
-                    raw = normalize_brands(raw)
-                    raw = add_channel(raw)
-                    extra = [c for c in raw.columns if c not in REQUIRED_COLS+["Channel"]]
-                    st.success(f"✅ {len(raw)} rows | {raw['Order Date'].min()} → {raw['Order Date'].max()}")
+                    raw = clean_df(normalize_brands(add_channel(raw)))
                     ch_counts = raw["Channel"].value_counts()
-                    st.info(f"🏪 National: {ch_counts.get('National',0):,} rows | 🛍️ Shopsy: {ch_counts.get('Shopsy',0):,} rows")
-                    if extra: st.info(f"📌 New columns: {extra}")
+                    st.success(f"✅ {len(raw):,} rows | {raw['Order Date'].min()} → {raw['Order Date'].max()}")
+                    st.info(f"🏪 National: {ch_counts.get('National',0):,} | 🛍️ Shopsy: {ch_counts.get('Shopsy',0):,}")
                     if st.button("💾 Save to Google Sheets", type="primary"):
                         with st.spinner("Saving..."):
                             client = get_gsheet_client()
                             added, dupes = save_data(client, raw, spreadsheet_name)
-                        st.success(f"✅ {added} new rows. {dupes} duplicates skipped.")
+                        st.success(f"✅ {added:,} new rows. {dupes:,} duplicates skipped.")
                         st.cache_data.clear()
             except Exception as e: st.error(f"Error: {e}")
 
         st.markdown("---")
         st.markdown("### 🔧 Database Tools")
-        if st.button("➕ Add Channel column to Sheet", help="One-time fix: adds National/Shopsy to all existing rows"):
-            with st.spinner("Updating Google Sheet..."):
+        if st.button("➕ Add Channel column to Sheet"):
+            with st.spinner("Updating..."):
                 try:
                     client = get_gsheet_client()
                     sh = get_or_create_sheet(client, spreadsheet_name)
                     ws = sh.sheet1
                     data = ws.get_all_records()
-                    if not data:
-                        st.warning("Sheet is empty.")
+                    if not data: st.warning("Sheet is empty.")
                     else:
-                        df_migrate = pd.DataFrame(data)
-                        df_migrate["Channel"] = df_migrate["Vertical"].apply(
-                            lambda v: "Shopsy" if str(v).strip().lower().startswith("shopsy") else "National"
-                        )
-                        df_migrate = df_migrate.fillna("").replace(["nan","NaT"], "")
+                        df_m = pd.DataFrame(data)
+                        df_m["Channel"] = df_m["Vertical"].apply(
+                            lambda v: "Shopsy" if str(v).strip().lower().startswith("shopsy") else "National")
+                        df_m = df_m.fillna("").replace(["nan","NaT"],"")
                         ws.clear()
-                        ws.update([df_migrate.columns.tolist()] + df_migrate.astype(str).values.tolist())
-                        ch = df_migrate["Channel"].value_counts()
-                        st.success(f"✅ Done! {len(df_migrate):,} rows updated.\n\n"
-                                   f"🏪 National: {ch.get('National',0):,} | 🛍️ Shopsy: {ch.get('Shopsy',0):,}")
+                        ws.update([df_m.columns.tolist()] + df_m.astype(str).values.tolist())
+                        ch = df_m["Channel"].value_counts()
+                        st.success(f"✅ {len(df_m):,} rows updated. National:{ch.get('National',0):,} Shopsy:{ch.get('Shopsy',0):,}")
                         st.cache_data.clear()
-                except Exception as e:
-                    st.error(f"Migration error: {e}")
+                except Exception as e: st.error(f"Error: {e}")
 
-        df_raw = load_data(spreadsheet_name)
-        if df_raw.empty:
+        # ── LOAD DATA ─────────────────────────────────────────────────────────
+        df_all = load_data(spreadsheet_name)
+        if df_all.empty:
             st.info("No data yet. Upload a file above.")
             st.stop()
 
-        st.markdown("---\n### 🔍 Filters")
+        st.markdown("---")
+        st.markdown("### 🔍 Filters")
 
-        # Date filter
-        df_raw["Order Date"] = pd.to_datetime(df_raw["Order Date"])
-        min_date = df_raw["Order Date"].min().date()
-        max_date = df_raw["Order Date"].max().date()
+        df_all["Order Date"] = pd.to_datetime(df_all["Order Date"])
+        min_date = df_all["Order Date"].min().date()
+        max_date = df_all["Order Date"].max().date()
         date_range = st.date_input("📅 Date Range", value=(min_date, max_date),
                                    min_value=min_date, max_value=max_date)
-        if isinstance(date_range, (list,tuple)) and len(date_range)==2:
-            start_date, end_date = date_range[0], date_range[1]
-        else:
-            start_date, end_date = min_date, max_date
-        df_raw = df_raw[(df_raw["Order Date"].dt.date>=start_date) & (df_raw["Order Date"].dt.date<=end_date)]
+        start_date = date_range[0] if isinstance(date_range,(list,tuple)) and len(date_range)==2 else min_date
+        end_date   = date_range[1] if isinstance(date_range,(list,tuple)) and len(date_range)==2 else max_date
 
-        # Channel filter
         channel_f = st.selectbox("📡 Channel", ["All","National","Shopsy"])
-
-        # Brand filter
-        brands = ["All"] + sorted(df_raw["Brand"].dropna().unique().tolist())
+        brands = ["All"] + sorted(df_all["Brand"].dropna().unique().tolist())
         brand_f = st.selectbox("🏷️ Brand", brands)
 
-        # Category filter
         frag_kw = ["fragrance","perfume","deodorant","deo","edt","edp","attar","body mist","body spray"]
         if brand_f == "Bellavita":
-            bv_cats = df_raw[df_raw["Brand"]=="Bellavita"]["Category"].dropna().unique().tolist()
-            frag_cats = [c for c in bv_cats if any(k in str(c).lower() for k in frag_kw)]
-            nonfrag_cats = [c for c in bv_cats if c not in frag_cats]
-            cat_f = st.selectbox("📦 Category (Bellavita)", ["All","Fragrance","Non-Fragrance"])
+            bv_cats = df_all[df_all["Brand"]=="Bellavita"]["Category"].dropna().unique().tolist()
+            frag_cats   = [c for c in bv_cats if any(k in str(c).lower() for k in frag_kw)]
+            nonfrag_cats= [c for c in bv_cats if c not in frag_cats]
+            cat_f = st.selectbox("📦 Category", ["All","Fragrance","Non-Fragrance"])
         else:
-            all_cats = ["All"] + sorted(df_raw["Category"].dropna().unique().tolist())
+            all_cats = ["All"] + sorted(df_all["Category"].dropna().unique().tolist())
             cat_f = st.selectbox("📦 Category", all_cats)
             frag_cats, nonfrag_cats = [], []
 
-        st.markdown("---\n### 📍 Jump To")
-        nav_items = [
-            ("📊 Overview","overview"),
-            ("🏪 National Channel","national"),
-            ("🛍️ Shopsy Channel","shopsy"),
-            ("📅 DoD Analysis","dod"),
-            ("📆 WoW Analysis","wow"),
-            ("🗓️ MoM Analysis","mom"),
-            ("📉 Declining SKUs","declining"),
-            ("🎯 Action Points","actions"),
-        ]
+        st.markdown("---")
+        st.markdown("### 📍 Jump To")
+        nav_items = [("📊 Overview","overview"),("🏪 National Channel","national"),
+                     ("🛍️ Shopsy Channel","shopsy"),("📅 DoD Analysis","dod"),
+                     ("📆 WoW Analysis","wow"),("🗓️ MoM Analysis","mom"),
+                     ("📉 Declining SKUs","declining"),("🎯 Action Points","actions")]
         if brand_f == "Bellavita": nav_items.insert(1,("🌸 Fragrance vs Non-Frag","fragrance"))
-        excl_col = next((c for c in df_raw.columns if "exclusive" in c.lower()), None)
+        excl_col = next((c for c in df_all.columns if "exclusive" in c.lower()), None)
         if excl_col: nav_items.append(("⭐ Exclusives","exclusives"))
         nav_html = ""
         for label, anchor in nav_items:
-            nav_html += f"""
-            <a href='#{anchor}' style='display:block;padding:7px 12px;margin:3px 0;
-                color:#C39BD3;text-decoration:none;font-size:13px;font-weight:500;
-                border-radius:8px;border:1px solid transparent;
-                transition:all 0.2s ease;background:rgba(108,52,131,0.08)'
-                onmouseover="this.style.background='rgba(108,52,131,0.25)';this.style.borderColor='rgba(108,52,131,0.4)'"
-                onmouseout="this.style.background='rgba(108,52,131,0.08)';this.style.borderColor='transparent'">
-                {label}
-            </a>"""
+            nav_html += f"<a href='#{anchor}' style='display:block;padding:7px 12px;margin:3px 0;color:#C39BD3;text-decoration:none;font-size:13px;font-weight:500;border-radius:8px;background:rgba(108,52,131,0.08)'>{label}</a>"
         st.markdown(nav_html, unsafe_allow_html=True)
 
-    # ── APPLY ALL FILTERS ─────────────────────────────────────────────────────
-    df = df_raw.copy()
-    disp = df.copy()
-    if channel_f != "All": disp = disp[disp["Channel"]==channel_f]
-    if brand_f != "All": disp = disp[disp["Brand"]==brand_f]
+    # ── APPLY ALL FILTERS — THIS IS THE KEY FIX ───────────────────────────────
+    # Step 1: date filter on master data
+    df_all["Order Date"] = pd.to_datetime(df_all["Order Date"])
+    df_dated = df_all[(df_all["Order Date"].dt.date >= start_date) & (df_all["Order Date"].dt.date <= end_date)].copy()
+
+    # Step 2: full filtered df for ALL charts (channel + brand + category)
+    df = df_dated.copy()
+    if channel_f != "All": df = df[df["Channel"] == channel_f]
+    if brand_f != "All":   df = df[df["Brand"] == brand_f]
     if cat_f != "All":
         if brand_f == "Bellavita":
-            disp = disp[disp["Category"].isin(frag_cats if cat_f=="Fragrance" else nonfrag_cats)]
+            df = df[df["Category"].isin(frag_cats if cat_f=="Fragrance" else nonfrag_cats)]
         else:
-            disp = disp[disp["Category"]==cat_f]
+            df = df[df["Category"] == cat_f]
 
-    disp["Order Date"] = pd.to_datetime(disp["Order Date"])
-    dates = sorted(disp["Order Date"].unique())
-    has_wow = disp["Order Date"].dt.to_period("W").nunique()>=2
-    has_mom = disp["Order Date"].dt.to_period("M").nunique()>=2
+    # Step 3: date-only df for channel-level and brand-level overview (not brand/cat filtered)
+    df_channel = df_dated.copy()  # used for National vs Shopsy overview
+    if brand_f != "All": df_channel = df_channel[df_channel["Brand"] == brand_f]
+
+    dates = sorted(df["Order Date"].unique())
+    has_wow = df["Order Date"].dt.to_period("W").nunique() >= 2
+    has_mom = df["Order Date"].dt.to_period("M").nunique() >= 2
 
     # ── HEADER ────────────────────────────────────────────────────────────────
-    # ── HERO BANNER ──────────────────────────────────────────────────────────
-    ch_counts = df["Channel"].value_counts() if not df.empty else {}
+    ch_counts = df_dated["Channel"].value_counts()
     date_str = f"{dates[0].strftime('%d %b %Y')} → {dates[-1].strftime('%d %b %Y')}" if dates else "—"
     st.markdown(f"""
-    <div style='background:linear-gradient(135deg,#1a0a2e 0%,#0d1a3a 50%,#0a1a20 100%);
-                border-radius:16px;padding:28px 32px;margin-bottom:24px;
-                border:1px solid #2a2a4a;
-                box-shadow:0 8px 32px rgba(0,0,0,0.4)'>
+    <div style='background:linear-gradient(135deg,#1a0a2e,#0d1a3a,#0a1a20);border-radius:16px;
+                padding:28px 32px;margin-bottom:24px;border:1px solid #2a2a4a;box-shadow:0 8px 32px rgba(0,0,0,0.4)'>
         <div style='display:flex;align-items:center;gap:12px;margin-bottom:8px'>
             <span style='font-size:32px'>🛒</span>
             <div>
-                <div style='font-size:26px;font-weight:800;color:#ffffff;
-                            letter-spacing:-0.5px;line-height:1.1'>
-                    Flipkart Sales Dashboard
-                </div>
-                <div style='font-size:13px;color:#8888bb;font-weight:500;margin-top:2px'>
-                    One Guardian · {brand_f} · {channel_f} Channel
-                </div>
+                <div style='font-size:26px;font-weight:800;color:#fff;letter-spacing:-0.5px'>Flipkart Sales Dashboard</div>
+                <div style='font-size:13px;color:#8888bb;margin-top:2px'>One Guardian · {brand_f} · {channel_f} · {cat_f}</div>
             </div>
         </div>
-        <div style='display:flex;gap:20px;flex-wrap:wrap;margin-top:14px'>
-            <div style='background:rgba(108,52,131,0.2);border:1px solid rgba(108,52,131,0.4);
-                        border-radius:8px;padding:6px 14px;font-size:12px;color:#D7BDE2;font-weight:600'>
-                📅 {date_str}
-            </div>
-            <div style='background:rgba(46,134,193,0.2);border:1px solid rgba(46,134,193,0.4);
-                        border-radius:8px;padding:6px 14px;font-size:12px;color:#85C1E9;font-weight:600'>
-                🏪 National: {ch_counts.get("National",0):,} rows
-            </div>
-            <div style='background:rgba(230,126,34,0.2);border:1px solid rgba(230,126,34,0.4);
-                        border-radius:8px;padding:6px 14px;font-size:12px;color:#F0B27A;font-weight:600'>
-                🛍️ Shopsy: {ch_counts.get("Shopsy",0):,} rows
-            </div>
-            <div style='background:rgba(46,204,113,0.15);border:1px solid rgba(46,204,113,0.3);
-                        border-radius:8px;padding:6px 14px;font-size:12px;color:#82E0AA;font-weight:600'>
-                📊 {len(disp):,} rows filtered
-            </div>
+        <div style='display:flex;gap:12px;flex-wrap:wrap;margin-top:14px'>
+            <div style='background:rgba(108,52,131,0.2);border:1px solid rgba(108,52,131,0.4);border-radius:8px;padding:5px 12px;font-size:12px;color:#D7BDE2;font-weight:600'>📅 {date_str}</div>
+            <div style='background:rgba(46,134,193,0.2);border:1px solid rgba(46,134,193,0.4);border-radius:8px;padding:5px 12px;font-size:12px;color:#85C1E9;font-weight:600'>🏪 National: {ch_counts.get("National",0):,}</div>
+            <div style='background:rgba(230,126,34,0.2);border:1px solid rgba(230,126,34,0.4);border-radius:8px;padding:5px 12px;font-size:12px;color:#F0B27A;font-weight:600'>🛍️ Shopsy: {ch_counts.get("Shopsy",0):,}</div>
+            <div style='background:rgba(46,204,113,0.15);border:1px solid rgba(46,204,113,0.3);border-radius:8px;padding:5px 12px;font-size:12px;color:#82E0AA;font-weight:600'>📊 {len(df):,} rows filtered</div>
         </div>
     </div>""", unsafe_allow_html=True)
 
     # ════════════════════════════════════════════════════════════════════
-    # 1. OVERVIEW
+    # 1. OVERVIEW — uses df (fully filtered)
     # ════════════════════════════════════════════════════════════════════
     st.markdown("<div id='overview'></div>", unsafe_allow_html=True)
     sec_hdr("📊 Overview","overview")
 
     if dates:
-        td=disp[disp["Order Date"]==dates[-1]]
-        yd=disp[disp["Order Date"]==dates[-2]] if len(dates)>=2 else pd.DataFrame()
+        td=df[df["Order Date"]==dates[-1]]
+        yd=df[df["Order Date"]==dates[-2]] if len(dates)>=2 else pd.DataFrame()
         ts,tc,tr=td["Final Sale Amount"].sum(),td["Cancellation Amount"].sum(),td["Return Amount"].sum()
         ys=yd["Final Sale Amount"].sum() if not yd.empty else 0
         yc=yd["Cancellation Amount"].sum() if not yd.empty else 0
@@ -636,18 +486,14 @@ def main():
         with c2: metric_card("Today's Cancellation",tc,pct_badge(safe_pct(tc,yc),inverse=True))
         with c3: metric_card("Today's Returns",tr,pct_badge(safe_pct(tr,yr),inverse=True))
         with c4: metric_card("Cancel Rate",cr,prefix="",suffix="%")
-        with c5: metric_card("Total Sale (Period)",disp["Final Sale Amount"].sum())
+        with c5: metric_card("Total Sale (Period)",df["Final Sale Amount"].sum())
 
-    # Channel split KPIs
+    # Channel split — uses df_dated (date-filtered only, not brand filtered for full picture)
     st.markdown("<div style='background:linear-gradient(90deg,rgba(46,134,193,0.12),rgba(230,126,34,0.12));border:1px solid #2a2a4a;border-radius:12px;padding:11px 18px;margin:20px 0 8px 0'><span style='font-size:15px;font-weight:700;color:#D7BDE2'>📡 National vs Shopsy — Total Period</span></div>", unsafe_allow_html=True)
-    ch_grp = df.groupby("Channel").agg(
-        Final_Sale=("Final Sale Amount","sum"),
-        Cancellation=("Cancellation Amount","sum"),
-        Returns=("Return Amount","sum"),
-        Units=("Final Sale Units","sum")
-    ).reset_index()
+    ch_grp = df_dated.groupby("Channel").agg(Final_Sale=("Final Sale Amount","sum"),
+        Cancellation=("Cancellation Amount","sum"), Returns=("Return Amount","sum"),
+        Units=("Final Sale Units","sum")).reset_index()
     ch_grp["Cancel Rate %"]=(ch_grp["Cancellation"]/(ch_grp["Final_Sale"]+ch_grp["Cancellation"]).replace(0,np.nan)*100).round(1)
-
     ca,cb=st.columns(2)
     with ca:
         st.plotly_chart(px.bar(ch_grp,x="Channel",y=["Final_Sale","Cancellation","Returns"],
@@ -661,35 +507,32 @@ def main():
     render_table(ch_grp.rename(columns={"Final_Sale":"Final Sale (₹)","Cancellation":"Cancel (₹)","Returns":"Returns (₹)","Units":"Units Sold"}),
                  {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Returns (₹)":"₹{:,.0f}","Units Sold":"{:,.0f}","Cancel Rate %":"{:.1f}%"})
 
-    # Brand-wise
+    # Brand-wise — uses df_dated
     st.markdown("<div style='background:rgba(108,52,131,0.12);border:1px solid #2a2a4a;border-radius:12px;padding:11px 18px;margin:20px 0 8px 0'><span style='font-size:15px;font-weight:700;color:#D7BDE2'>🏷️ Brand-wise Performance</span></div>", unsafe_allow_html=True)
-    bg=df.groupby(["Brand","Channel"]).agg(Final_Sale=("Final Sale Amount","sum"),Cancellation=("Cancellation Amount","sum"),Returns=("Return Amount","sum")).reset_index()
+    bg=df_dated.groupby(["Brand","Channel"]).agg(Final_Sale=("Final Sale Amount","sum")).reset_index()
     st.plotly_chart(px.bar(bg,x="Brand",y="Final_Sale",color="Channel",barmode="group",
         template="plotly_dark",title="Brand-wise Final Sale by Channel",
         color_discrete_map=CHANNEL_COLORS,labels={"Final_Sale":"Final Sale (₹)"}), use_container_width=True)
-
-    bg2=df.groupby("Brand").agg(Final_Sale=("Final Sale Amount","sum"),Cancellation=("Cancellation Amount","sum"),Returns=("Return Amount","sum"),Units=("Final Sale Units","sum")).reset_index().sort_values("Final_Sale",ascending=False)
+    bg2=df_dated.groupby("Brand").agg(Final_Sale=("Final Sale Amount","sum"),Cancellation=("Cancellation Amount","sum"),
+        Returns=("Return Amount","sum"),Units=("Final Sale Units","sum")).reset_index().sort_values("Final_Sale",ascending=False)
     bg2["Cancel Rate %"]=(bg2["Cancellation"]/(bg2["Final_Sale"]+bg2["Cancellation"]).replace(0,np.nan)*100).round(1)
     render_table(bg2.rename(columns={"Final_Sale":"Final Sale (₹)","Cancellation":"Cancel (₹)","Returns":"Returns (₹)","Units":"Units Sold"}),
                  {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Returns (₹)":"₹{:,.0f}","Units Sold":"{:,.0f}","Cancel Rate %":"{:.1f}%"})
 
-    # Daily trend
+    # Daily trend — uses df (fully filtered)
     st.markdown("<div style='background:rgba(46,204,113,0.08);border:1px solid #2a2a4a;border-radius:12px;padding:11px 18px;margin:20px 0 8px 0'><span style='font-size:15px;font-weight:700;color:#D7BDE2'>📈 Daily Trend</span></div>", unsafe_allow_html=True)
-    st.plotly_chart(combined_chart(daily_agg(disp),"Order Date",
-                    "Daily: Final Sale (Bar) | Cancel & Returns (Line)"), use_container_width=True)
-
-    # Daily trend by channel
-    dt_ch = df.copy(); dt_ch["Order Date"]=pd.to_datetime(dt_ch["Order Date"])
+    st.plotly_chart(combined_chart(daily_agg(df),"Order Date","Daily: Final Sale (Bar) | Cancel & Returns (Line)"), use_container_width=True)
+    dt_ch = df_dated.copy(); dt_ch["Order Date"]=pd.to_datetime(dt_ch["Order Date"])
     dt_ch = dt_ch.groupby(["Order Date","Channel"]).agg(Final_Sale=("Final Sale Amount","sum")).reset_index()
     st.plotly_chart(px.line(dt_ch,x="Order Date",y="Final_Sale",color="Channel",
         title="Daily Final Sale: National vs Shopsy",template="plotly_dark",
         color_discrete_map=CHANNEL_COLORS,labels={"Final_Sale":"Final Sale (₹)"}), use_container_width=True)
 
     # ════════════════════════════════════════════════════════════════════
-    # 2. CHANNEL SECTIONS
+    # 2. CHANNEL SECTIONS — uses df_dated (not brand filtered)
     # ════════════════════════════════════════════════════════════════════
-    render_channel_section(df, "National", "national")
-    render_channel_section(df, "Shopsy", "shopsy")
+    render_channel_section(df_dated, "National", "national")
+    render_channel_section(df_dated, "Shopsy", "shopsy")
 
     # ════════════════════════════════════════════════════════════════════
     # 3. BELLAVITA FRAG vs NON-FRAG
@@ -697,7 +540,8 @@ def main():
     if brand_f == "Bellavita":
         st.markdown("<div id='fragrance'></div>", unsafe_allow_html=True)
         sec_hdr("🌸 Fragrance vs Non-Fragrance","fragrance")
-        bv=df[df["Brand"]=="Bellavita"].copy(); bv["Order Date"]=pd.to_datetime(bv["Order Date"])
+        bv=df_dated[df_dated["Brand"]=="Bellavita"].copy()
+        bv["Order Date"]=pd.to_datetime(bv["Order Date"])
         bv["Type"]=bv["Category"].apply(lambda c:"Fragrance" if any(k in str(c).lower() for k in frag_kw) else "Non-Fragrance")
         tg=bv.groupby("Type").agg(Final_Sale=("Final Sale Amount","sum"),Cancellation=("Cancellation Amount","sum"),Returns=("Return Amount","sum"),Units=("Final Sale Units","sum")).reset_index()
         c1,c2=st.columns(2)
@@ -707,7 +551,6 @@ def main():
                 color_discrete_map={"Final_Sale":"#6C3483","Cancellation":"#e74c3c","Returns":"#e67e22"}), use_container_width=True)
         with c2:
             st.plotly_chart(px.pie(tg,values="Final_Sale",names="Type",title="Sale Share",template="plotly_dark"), use_container_width=True)
-        # By channel too
         tg_ch=bv.groupby(["Type","Channel"]).agg(Final_Sale=("Final Sale Amount","sum")).reset_index()
         st.plotly_chart(px.bar(tg_ch,x="Type",y="Final_Sale",color="Channel",barmode="group",
             template="plotly_dark",title="Fragrance vs Non-Frag by Channel",
@@ -721,13 +564,12 @@ def main():
                      {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Cancel Rate %":"{:.1f}%"})
 
     # ════════════════════════════════════════════════════════════════════
-    # 4. DOD
+    # 4-6. DOD / WOW / MOM — all use df (fully filtered)
     # ════════════════════════════════════════════════════════════════════
     st.markdown("<div id='dod'></div>", unsafe_allow_html=True)
     sec_hdr("📅 Day-on-Day (DoD) Analysis","dod")
-    dod=dod_data(disp)
+    dod=dod_data(df)
     st.plotly_chart(combined_chart(dod,"Order Date","DoD: Final Sale (Bar) | Cancel & Returns (Line)"), use_container_width=True)
-    st.markdown("#### DoD % Change Table")
     dd=dod.copy(); dd["Order Date"]=dd["Order Date"].dt.strftime("%d %b %Y")
     dd=dd.rename(columns={"Final_Sale":"Final Sale (₹)","DoD_Sale_%":"DoD Sale %","Cancellation":"Cancel (₹)",
                            "DoD_Cancel_%":"DoD Cancel %","Returns":"Returns (₹)","DoD_Return_%":"DoD Return %","Sale_Units":"Units"})
@@ -736,15 +578,11 @@ def main():
                   "DoD Cancel %":"{:.1f}%","Returns (₹)":"₹{:,.0f}","DoD Return %":"{:.1f}%","Units":"{:,.0f}"},
                  pct_cols=["DoD Sale %","DoD Cancel %","DoD Return %"])
 
-    # ════════════════════════════════════════════════════════════════════
-    # 5. WOW
-    # ════════════════════════════════════════════════════════════════════
     st.markdown("<div id='wow'></div>", unsafe_allow_html=True)
     sec_hdr("📆 Week-on-Week (WoW) Analysis","wow")
-    if not has_wow:
-        st.info("Need at least 2 weeks of data.")
+    if not has_wow: st.info("Need at least 2 weeks of data.")
     else:
-        wow=wow_data(disp); wow["Week_Str"]=wow["Week"].dt.strftime("W/C %d %b")
+        wow=wow_data(df); wow["Week_Str"]=wow["Week"].dt.strftime("W/C %d %b")
         st.plotly_chart(combined_chart(wow,"Week_Str","WoW: Final Sale (Bar) | Cancel & Returns (Line)"), use_container_width=True)
         wd=wow.copy(); wd["Week"]=wd["Week"].dt.strftime("W/C %d %b %Y")
         wd=wd.rename(columns={"Final_Sale":"Final Sale (₹)","WoW_Sale_%":"WoW Sale %","Cancellation":"Cancel (₹)",
@@ -754,15 +592,11 @@ def main():
                       "WoW Cancel %":"{:.1f}%","Returns (₹)":"₹{:,.0f}","WoW Return %":"{:.1f}%"},
                      pct_cols=["WoW Sale %","WoW Cancel %","WoW Return %"])
 
-    # ════════════════════════════════════════════════════════════════════
-    # 6. MOM
-    # ════════════════════════════════════════════════════════════════════
     st.markdown("<div id='mom'></div>", unsafe_allow_html=True)
     sec_hdr("🗓️ Month-on-Month (MoM) Analysis","mom")
-    if not has_mom:
-        st.info("📊 MoM activates with 2+ months of data.")
+    if not has_mom: st.info("📊 MoM activates with 2+ months of data.")
     else:
-        mom=mom_data(disp); mom["Month_Str"]=mom["Month"].dt.strftime("%b %Y")
+        mom=mom_data(df); mom["Month_Str"]=mom["Month"].dt.strftime("%b %Y")
         st.plotly_chart(combined_chart(mom,"Month_Str","MoM: Final Sale (Bar) | Cancel & Returns (Line)"), use_container_width=True)
         md=mom.copy(); md["Month"]=md["Month"].dt.strftime("%b %Y")
         md=md.rename(columns={"Final_Sale":"Final Sale (₹)","MoM_Sale_%":"MoM Sale %","Cancellation":"Cancel (₹)",
@@ -773,48 +607,44 @@ def main():
                      pct_cols=["MoM Sale %","MoM Cancel %","MoM Return %"])
 
     # ════════════════════════════════════════════════════════════════════
-    # 7. DECLINING SKUs
+    # 7. DECLINING SKUs — uses df (fully filtered)
     # ════════════════════════════════════════════════════════════════════
     st.markdown("<div id='declining'></div>", unsafe_allow_html=True)
     sec_hdr("📉 Declining SKUs","declining")
-    dec=declining_skus(disp)
-    if dec.empty:
-        st.info("Need at least 2 weeks of data.")
+    dec=declining_skus(df)
+    if dec.empty: st.info("Need at least 2 weeks of data.")
     else:
         st.plotly_chart(px.bar(dec.head(15),x="SKU ID",y="Change %",color="Brand",template="plotly_dark",
                                title="Top Declining SKUs (WoW %)",color_discrete_map=BRAND_COLORS), use_container_width=True)
-        cols_show = [c for c in ["SKU ID","Brand","Category","Channel","Prev Week","Last Week","Change %"] if c in dec.columns]
-        render_table(dec[cols_show],
-                     {"Prev Week":"₹{:,.0f}","Last Week":"₹{:,.0f}","Change %":"{:.1f}%"},
-                     pct_cols=["Change %"])
+        cols_show=[c for c in ["SKU ID","Brand","Category","Channel","Prev Week","Last Week","Change %"] if c in dec.columns]
+        render_table(dec[cols_show],{"Prev Week":"₹{:,.0f}","Last Week":"₹{:,.0f}","Change %":"{:.1f}%"},pct_cols=["Change %"])
 
     # ════════════════════════════════════════════════════════════════════
-    # 8. ACTION POINTS
+    # 8. ACTION POINTS — uses df (fully filtered)
     # ════════════════════════════════════════════════════════════════════
     st.markdown("<div id='actions'></div>", unsafe_allow_html=True)
     sec_hdr("🎯 Action Points","actions")
-    st.caption("Auto-generated daily based on your data. Updates with every upload.")
-    for i,a in enumerate(action_points(disp),1): st.markdown(f"**{i}.** {a}")
-
+    st.caption("Auto-generated based on filtered data. Updates with every upload.")
+    for i,a in enumerate(action_points(df),1): st.markdown(f"**{i}.** {a}")
     st.markdown("#### Brand-wise Actions")
-    for b in sorted(df["Brand"].unique()):
-        bdf=df[df["Brand"]==b]
+    for b in sorted(df_dated["Brand"].unique()):
+        bdf=df_dated[df_dated["Brand"]==b]
         bdates=sorted(pd.to_datetime(bdf["Order Date"]).unique())
         if bdates:
             td2=bdf[pd.to_datetime(bdf["Order Date"])==bdates[-1]]
-            s2=td2["Final Sale Amount"].sum(); c2=td2["Cancellation Amount"].sum(); r2=td2["Return Amount"].sum()
-            with st.expander(f"**{b}** — ₹{s2:,.0f} sale | ₹{c2:,.0f} cancel | ₹{r2:,.0f} returns"):
+            s2=td2["Final Sale Amount"].sum(); c2=td2["Cancellation Amount"].sum()
+            with st.expander(f"**{b}** — ₹{s2:,.0f} sale | ₹{c2:,.0f} cancel"):
                 for a in action_points(bdf): st.markdown(f"• {a}")
 
     # ════════════════════════════════════════════════════════════════════
-    # 9. EXCLUSIVES (if column exists)
+    # 9. EXCLUSIVES
     # ════════════════════════════════════════════════════════════════════
-    excl_col = next((c for c in disp.columns if "exclusive" in c.lower()), None)
     if excl_col:
         st.markdown("<div id='exclusives'></div>", unsafe_allow_html=True)
         sec_hdr("⭐ Exclusives Analysis","exclusives")
-        ex=disp.copy(); ex["Is_Excl"]=ex[excl_col].astype(str).str.lower().isin(["yes","true","1","y","exclusive"])
-        eg=ex.groupby("Is_Excl").agg(Final_Sale=("Final Sale Amount","sum"),Cancellation=("Cancellation Amount","sum"),Returns=("Return Amount","sum"),Units=("Final Sale Units","sum")).reset_index()
+        ex=df.copy(); ex["Is_Excl"]=ex[excl_col].astype(str).str.lower().isin(["yes","true","1","y","exclusive"])
+        eg=ex.groupby("Is_Excl").agg(Final_Sale=("Final Sale Amount","sum"),Cancellation=("Cancellation Amount","sum"),
+                                      Returns=("Return Amount","sum"),Units=("Final Sale Units","sum")).reset_index()
         eg["Label"]=eg["Is_Excl"].map({True:"Exclusive",False:"Non-Exclusive"})
         c1,c2=st.columns(2)
         with c1: st.plotly_chart(px.bar(eg,x="Label",y=["Final_Sale","Cancellation","Returns"],barmode="group",template="plotly_dark",title="Exclusive vs Non-Exclusive"), use_container_width=True)
@@ -824,16 +654,16 @@ def main():
             {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Returns (₹)":"₹{:,.0f}","Units Sold":"{:,.0f}"})
 
     # ════════════════════════════════════════════════════════════════════
-    # 10. EXTRA COLUMNS
+    # 10. EXTRA NUMERIC COLUMNS
     # ════════════════════════════════════════════════════════════════════
-    extra_num = [c for c in disp.columns if c not in REQUIRED_COLS+["Order Date","Channel"]
-                 and pd.api.types.is_numeric_dtype(disp[c])]
+    extra_num=[c for c in df.columns if c not in REQUIRED_COLS+["Order Date","Channel"]
+               and pd.api.types.is_numeric_dtype(df[c])]
     if extra_num:
         st.markdown("---")
         st.markdown("#### 📌 Additional Metrics")
-        cols = st.columns(min(len(extra_num),4))
+        cols=st.columns(min(len(extra_num),4))
         for i,col in enumerate(extra_num):
-            with cols[i%4]: metric_card(col, disp[col].sum())
+            with cols[i%4]: metric_card(col, df[col].sum())
 
 if __name__ == "__main__":
     main()
