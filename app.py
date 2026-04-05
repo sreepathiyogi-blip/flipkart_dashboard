@@ -23,7 +23,8 @@ REQUIRED_COLS = ["Product Id","SKU ID","Category","Brand","Vertical","Order Date
                  "Return Units","Return Amount","Final Sale Units","Final Sale Amount"]
 NUMERIC_COLS = ["Gross Units","GMV","Cancellation Units","Cancellation Amount",
                 "Return Units","Return Amount","Final Sale Units","Final Sale Amount"]
-BRAND_COLORS = {"Bellavita":"#6C3483","Kenaz":"#1A5276","Embarouge":"#C0392B","HipHop Skincare":"#117A65","Guzz":"#D4AC0D"}
+BRAND_COLORS = {"Bellavita":"#9B59B6","Kenaz":"#3498DB","Embarouge":"#E74C3C","HipHop Skincare":"#2ECC71","Guzz":"#F39C12"}
+PIE_COLORS = ["#9B59B6","#3498DB","#E74C3C","#2ECC71","#F39C12","#1ABC9C","#E67E22","#E91E63","#00BCD4","#8BC34A"]
 BELLAVITA_NAMES = ["BELLAVITA","Bella vita organic","Bellavita","bella vita","BELLA VITA ORGANIC","bellavita"]
 CHANNEL_COLORS = {"Shopsy":"#E67E22","National":"#2E86C1"}
 
@@ -579,7 +580,7 @@ def main():
 
         st.markdown("---")
         st.markdown("### 📍 Jump To")
-        nav_items = [("📊 Overview","overview"),("🏪 National Channel","national"),
+        nav_items = [("📊 Overview","overview"),("📊 Vertical Analysis","vertical"),("🏪 National Channel","national"),
                      ("🛍️ Shopsy Channel","shopsy"),("📅 DoD Analysis","dod"),
                      ("📆 WoW Analysis","wow"),("🗓️ MoM Analysis","mom"),
                      ("📉 Declining SKUs","declining"),("🎯 Action Points","actions")]
@@ -706,9 +707,16 @@ def main():
     st.plotly_chart(combined_chart(daily_agg(df),"Order Date","Daily: Final Sale (Bar) | Cancel & Returns (Line)"), use_container_width=True)
     dt_ch = df.copy(); dt_ch["Order Date"]=pd.to_datetime(dt_ch["Order Date"])
     dt_ch = dt_ch.groupby(["Order Date","Channel"]).agg(Final_Sale=("Final Sale Amount","sum")).reset_index()
-    st.plotly_chart(ind_px_line(dt_ch,x="Order Date",y="Final_Sale",color="Channel",
+    fig_daily_ch = px.area(dt_ch,x="Order Date",y="Final_Sale",color="Channel",
         title="Daily Final Sale: National vs Shopsy",template="plotly_dark",
-        color_discrete_map=CHANNEL_COLORS,labels={"Final_Sale":"Final Sale (₹)"}), use_container_width=True)
+        color_discrete_map={"National":"#2E86C1","Shopsy":"#E67E22"},
+        labels={"Final_Sale":"Final Sale (₹)","Order Date":"Date"},
+        line_group="Channel")
+    fig_daily_ch.update_traces(opacity=0.7)
+    max_v2 = dt_ch["Final_Sale"].max() if not dt_ch.empty else 1
+    ticks2 = [max_v2*i/5 for i in range(6)]
+    fig_daily_ch.update_yaxes(tickvals=ticks2, ticktext=["₹"+indian_fmt(v) for v in ticks2])
+    st.plotly_chart(fig_daily_ch, use_container_width=True)
 
     # ════════════════════════════════════════════════════════════════════
     # 2. CHANNEL SECTIONS — uses df (fully filtered)
@@ -717,9 +725,117 @@ def main():
     render_channel_section(df, "Shopsy", "shopsy")
 
     # ════════════════════════════════════════════════════════════════════
+    # 2.5 VERTICAL ANALYSIS
+    # ════════════════════════════════════════════════════════════════════
+    sec_hdr("📊 Vertical Analysis","vertical")
+    vert_grp = df.groupby("Vertical").agg(
+        Final_Sale=("Final Sale Amount","sum"),
+        Cancellation=("Cancellation Amount","sum"),
+        Returns=("Return Amount","sum"),
+        Units=("Final Sale Units","sum")
+    ).reset_index().sort_values("Final_Sale", ascending=False).head(15)
+    vert_grp["Cancel Rate %"] = (vert_grp["Cancellation"]/(vert_grp["Final_Sale"]+vert_grp["Cancellation"]).replace(0,np.nan)*100).round(1)
+    va, vb = st.columns(2)
+    with va:
+        fig_vert = px.bar(vert_grp, x="Vertical", y="Final_Sale", template="plotly_dark",
+            title="Top Verticals by Final Sale", color="Final_Sale",
+            color_continuous_scale="Purples", labels={"Final_Sale":"Final Sale (₹)"})
+        max_vv = vert_grp["Final_Sale"].max() if not vert_grp.empty else 1
+        ticks_vv = [max_vv*i/5 for i in range(6)]
+        fig_vert.update_yaxes(tickvals=ticks_vv, ticktext=["₹"+indian_fmt(v) for v in ticks_vv])
+        fig_vert.update_xaxes(tickangle=45)
+        st.plotly_chart(fig_vert, use_container_width=True)
+    with vb:
+        st.plotly_chart(px.pie(vert_grp,values="Final_Sale",names="Vertical",
+            title="Vertical Sale Share",template="plotly_dark",
+            color_discrete_sequence=PIE_COLORS), use_container_width=True)
+    render_table(vert_grp.rename(columns={"Final_Sale":"Final Sale (₹)","Cancellation":"Cancel (₹)","Returns":"Returns (₹)","Units":"Units Sold"}),
+        {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Returns (₹)":"₹{:,.0f}","Units Sold":"{:,.0f}","Cancel Rate %":"{:.1f}%"})
+
+    # Vertical DoD
+    with st.expander("📅 Vertical DoD Analysis"):
+        vert_dod = df.copy()
+        vert_dod["Order Date"] = pd.to_datetime(vert_dod["Order Date"])
+        vdates = sorted(vert_dod["Order Date"].unique())
+        if len(vdates)>=2:
+            vt = vert_dod[vert_dod["Order Date"]==vdates[-1]].groupby("Vertical")["Final Sale Amount"].sum()
+            vy = vert_dod[vert_dod["Order Date"]==vdates[-2]].groupby("Vertical")["Final Sale Amount"].sum()
+            vdod = pd.DataFrame({"Today":vt,"Yesterday":vy}).fillna(0)
+            vdod["DoD %"] = ((vdod["Today"]-vdod["Yesterday"])/vdod["Yesterday"].replace(0,np.nan)*100).round(1)
+            vdod = vdod.sort_values("Today",ascending=False).reset_index()
+            render_table(vdod, {"Today":"₹{:,.0f}","Yesterday":"₹{:,.0f}","DoD %":"{:.1f}%"}, pct_cols=["DoD %"])
+
+    # Vertical WoW
+    with st.expander("📆 Vertical WoW Analysis"):
+        vert_wow = df.copy()
+        vert_wow["Order Date"] = pd.to_datetime(vert_wow["Order Date"])
+        vert_wow["Week"] = vert_wow["Order Date"].dt.to_period("W").apply(lambda r: r.start_time)
+        vweeks = sorted(vert_wow["Week"].unique())
+        if len(vweeks)>=2:
+            vw1 = vert_wow[vert_wow["Week"]==vweeks[-1]].groupby("Vertical")["Final Sale Amount"].sum()
+            vw2 = vert_wow[vert_wow["Week"]==vweeks[-2]].groupby("Vertical")["Final Sale Amount"].sum()
+            vwow = pd.DataFrame({"This Week":vw1,"Last Week":vw2}).fillna(0)
+            vwow["WoW %"] = ((vwow["This Week"]-vwow["Last Week"])/vwow["Last Week"].replace(0,np.nan)*100).round(1)
+            vwow = vwow.sort_values("This Week",ascending=False).reset_index()
+            render_table(vwow, {"This Week":"₹{:,.0f}","Last Week":"₹{:,.0f}","WoW %":"{:.1f}%"}, pct_cols=["WoW %"])
+
+    # Vertical MoM
+    with st.expander("🗓️ Vertical MoM Analysis"):
+        vert_mom = df.copy()
+        vert_mom["Order Date"] = pd.to_datetime(vert_mom["Order Date"])
+        vert_mom["Month"] = vert_mom["Order Date"].dt.to_period("M").apply(lambda r: r.start_time)
+        vmonths = sorted(vert_mom["Month"].unique())
+        if len(vmonths)>=2:
+            vm1 = vert_mom[vert_mom["Month"]==vmonths[-1]].groupby("Vertical")["Final Sale Amount"].sum()
+            vm2 = vert_mom[vert_mom["Month"]==vmonths[-2]].groupby("Vertical")["Final Sale Amount"].sum()
+            vmom = pd.DataFrame({"This Month":vm1,"Last Month":vm2}).fillna(0)
+            vmom["MoM %"] = ((vmom["This Month"]-vmom["Last Month"])/vmom["Last Month"].replace(0,np.nan)*100).round(1)
+            vmom = vmom.sort_values("This Month",ascending=False).reset_index()
+            render_table(vmom, {"This Month":"₹{:,.0f}","Last Month":"₹{:,.0f}","MoM %":"{:.1f}%"}, pct_cols=["MoM %"])
+
+    # ════════════════════════════════════════════════════════════════════
     # 3. BELLAVITA FRAG vs NON-FRAG
     # ════════════════════════════════════════════════════════════════════
     if brand_f == "Bellavita":
+        st.markdown("<div id='fragrance'></div>", unsafe_allow_html=True)
+        sec_hdr("🌸 Fragrance vs Non-Fragrance","fragrance")
+        bv=df[df["Brand"]=="Bellavita"].copy()
+        bv["Order Date"]=pd.to_datetime(bv["Order Date"])
+        bv["Type"]=bv["Category"].apply(lambda c:"Fragrance" if any(k in str(c).lower() for k in frag_kw) else "Non-Fragrance")
+
+        # DoD Frag vs Non-Frag
+        with st.expander("📅 Frag vs Non-Frag DoD"):
+            bv_dates = sorted(bv["Order Date"].unique())
+            if len(bv_dates)>=2:
+                bvt = bv[bv["Order Date"]==bv_dates[-1]].groupby("Type")["Final Sale Amount"].sum()
+                bvy = bv[bv["Order Date"]==bv_dates[-2]].groupby("Type")["Final Sale Amount"].sum()
+                bvdod = pd.DataFrame({"Today":bvt,"Yesterday":bvy}).fillna(0)
+                bvdod["DoD %"] = ((bvdod["Today"]-bvdod["Yesterday"])/bvdod["Yesterday"].replace(0,np.nan)*100).round(1)
+                bvdod["Target Gap"] = bvdod.apply(lambda r: "🎯 Focus: grow Non-Frag" if r.name=="Non-Fragrance" else "", axis=1)
+                render_table(bvdod.reset_index(), {"Today":"₹{:,.0f}","Yesterday":"₹{:,.0f}","DoD %":"{:.1f}%"}, pct_cols=["DoD %"])
+
+        # WoW Frag vs Non-Frag
+        with st.expander("📆 Frag vs Non-Frag WoW"):
+            bv["Week"] = bv["Order Date"].dt.to_period("W").apply(lambda r: r.start_time)
+            bv_weeks = sorted(bv["Week"].unique())
+            if len(bv_weeks)>=2:
+                bvw1 = bv[bv["Week"]==bv_weeks[-1]].groupby("Type")["Final Sale Amount"].sum()
+                bvw2 = bv[bv["Week"]==bv_weeks[-2]].groupby("Type")["Final Sale Amount"].sum()
+                bvwow = pd.DataFrame({"This Week":bvw1,"Last Week":bvw2}).fillna(0)
+                bvwow["WoW %"] = ((bvwow["This Week"]-bvwow["Last Week"])/bvwow["Last Week"].replace(0,np.nan)*100).round(1)
+                render_table(bvwow.reset_index(), {"This Week":"₹{:,.0f}","Last Week":"₹{:,.0f}","WoW %":"{:.1f}%"}, pct_cols=["WoW %"])
+
+        # MoM Frag vs Non-Frag
+        with st.expander("🗓️ Frag vs Non-Frag MoM"):
+            bv["Month"] = bv["Order Date"].dt.to_period("M").apply(lambda r: r.start_time)
+            bv_months = sorted(bv["Month"].unique())
+            if len(bv_months)>=2:
+                bvm1 = bv[bv["Month"]==bv_months[-1]].groupby("Type")["Final Sale Amount"].sum()
+                bvm2 = bv[bv["Month"]==bv_months[-2]].groupby("Type")["Final Sale Amount"].sum()
+                bvmom = pd.DataFrame({"This Month":bvm1,"Last Month":bvm2}).fillna(0)
+                bvmom["MoM %"] = ((bvmom["This Month"]-bvmom["Last Month"])/bvmom["Last Month"].replace(0,np.nan)*100).round(1)
+                bvmom["Note"] = bvmom.index.map(lambda x: "🎯 Growth Target" if x=="Non-Fragrance" else "")
+                render_table(bvmom.reset_index(), {"This Month":"₹{:,.0f}","Last Month":"₹{:,.0f}","MoM %":"{:.1f}%"}, pct_cols=["MoM %"])
         st.markdown("<div id='fragrance'></div>", unsafe_allow_html=True)
         sec_hdr("🌸 Fragrance vs Non-Fragrance","fragrance")
         bv=df[df["Brand"]=="Bellavita"].copy()
