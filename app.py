@@ -584,8 +584,6 @@ def main():
             nav_html += f"<a href='#{anchor}' style='display:block;padding:7px 12px;margin:3px 0;color:#C39BD3;text-decoration:none;font-size:13px;font-weight:500;border-radius:8px;background:rgba(108,52,131,0.08)'>{label}</a>"
         st.markdown(nav_html, unsafe_allow_html=True)
 
-    # ── SIDEBAR HINT ─────────────────────────────────────────────────────────
-    st.info("👈 **Filters & Upload are in the sidebar on the left.** Click the **>** arrow at the top-left of this page if you cannot see it.")
 
     # ── APPLY ALL FILTERS — THIS IS THE KEY FIX ───────────────────────────────
     # Step 1: date filter on master data
