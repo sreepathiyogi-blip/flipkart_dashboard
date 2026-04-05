@@ -463,6 +463,29 @@ def main():
     </style>""", unsafe_allow_html=True)
 
     # ── SIDEBAR ───────────────────────────────────────────────────────────────
+    # Auto-open sidebar on page load
+    st.markdown("""
+    <script>
+    (function() {
+        function openSidebar() {
+            var sidebar = window.parent.document.querySelector('section[data-testid="stSidebar"]');
+            if (sidebar) {
+                var expanded = sidebar.getAttribute('aria-expanded');
+                if (expanded === 'false') {
+                    var btn = window.parent.document.querySelector('[data-testid="collapsedControl"]') ||
+                              window.parent.document.querySelector('button[data-testid="baseButton-headerNoPadding"]');
+                    if (btn) btn.click();
+                }
+            }
+        }
+        // Try immediately and after delays to handle Streamlit load timing
+        setTimeout(openSidebar, 500);
+        setTimeout(openSidebar, 1000);
+        setTimeout(openSidebar, 2000);
+    })();
+    </script>
+    """, unsafe_allow_html=True)
+
     with st.sidebar:
         st.markdown("""<div style='text-align:center;padding:16px 0 8px 0'>
             <div style='font-size:26px'>🛒</div>
@@ -564,12 +587,25 @@ def main():
     # ── SIDEBAR OPEN HINT ────────────────────────────────────────────────────
     st.markdown("""
     <div style='background:#1a1a35;border:1px solid #6C3483;border-radius:10px;
-                padding:10px 18px;margin-bottom:16px;display:flex;align-items:center;gap:10px'>
-        <span style='font-size:22px'>👈</span>
-        <span style='font-size:13px;color:#C39BD3'>
-            <b>Filters & Upload</b> are in the sidebar on the left.
-            If you can't see it, click the <b style='color:#fff'>&gt;</b> arrow at the very top-left of this page.
-        </span>
+                padding:12px 18px;margin-bottom:16px;display:flex;align-items:center;
+                justify-content:space-between;gap:10px'>
+        <div style='display:flex;align-items:center;gap:10px'>
+            <span style='font-size:22px'>👈</span>
+            <span style='font-size:13px;color:#C39BD3'>
+                <b style='color:#fff'>Filters & Upload</b> are in the sidebar on the left.
+                If hidden, click the <b style='color:#FFD700'>&gt;</b> arrow at the very top-left corner of this page to open it.
+            </span>
+        </div>
+        <button onclick="
+            var btn = window.parent.document.querySelector('[data-testid=\"baseButton-headerNoPadding\"]') ||
+                      window.parent.document.querySelector('[data-testid=\"collapsedControl\"]') ||
+                      window.parent.document.querySelector('button[kind=\"header\"]');
+            if(btn) btn.click();
+        " style='background:#6C3483;color:white;border:none;border-radius:8px;
+                  padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;
+                  white-space:nowrap;flex-shrink:0'>
+            ☰ Open Sidebar
+        </button>
     </div>""", unsafe_allow_html=True)
 
     # ── APPLY ALL FILTERS — THIS IS THE KEY FIX ───────────────────────────────
