@@ -22,6 +22,32 @@ BRAND_COLORS = {"Bellavita":"#6C3483","Kenaz":"#1A5276","Embarouge":"#C0392B","H
 BELLAVITA_NAMES = ["BELLAVITA","Bella vita organic","Bellavita","bella vita","BELLA VITA ORGANIC","bellavita"]
 CHANNEL_COLORS = {"Shopsy":"#E67E22","National":"#2E86C1"}
 
+def indian_fmt(n):
+    """Format number in Indian number system: 1,00,000 / 10,00,000 / 1,00,00,000"""
+    try:
+        n = float(n)
+        if n < 0:
+            return "-" + indian_fmt(-n)
+        n = int(round(n))
+        s = str(n)
+        if len(s) <= 3:
+            return s
+        # Last 3 digits, then groups of 2
+        last3 = s[-3:]
+        rest = s[:-3]
+        groups = []
+        while len(rest) > 2:
+            groups.append(rest[-2:])
+            rest = rest[:-2]
+        if rest:
+            groups.append(rest)
+        return ",".join(reversed(groups)) + "," + last3
+    except:
+        return str(n)
+
+def indian_rupee(n):
+    return "₹" + indian_fmt(n)
+
 def normalize_brands(df):
     df = df.copy()
     df["Brand"] = df["Brand"].astype(str).str.strip()
@@ -107,7 +133,7 @@ def pct_badge(pct, inverse=False):
     return f"<span style='color:{c};font-weight:600'>{s} {abs(pct):.1f}%</span>"
 
 def metric_card(label, val, delta="", prefix="₹", suffix=""):
-    vs = f"{prefix}{val:,.0f}{suffix}"
+    vs = f"{prefix}{indian_fmt(val)}{suffix}"
     st.markdown(f"""
     <div style='background:linear-gradient(135deg,#13132a,#1a1a35);padding:18px 20px;border-radius:14px;
                 border:1px solid #2a2a4a;border-left:4px solid #6C3483;margin-bottom:8px;
@@ -126,18 +152,39 @@ def sec_hdr(title, anchor):
                    letter-spacing:-0.3px'>{title}</h2>
     </div>""", unsafe_allow_html=True)
 
+def ind_tick(val, _):
+    """Indian format for plotly axis ticks"""
+    if val >= 1e7: return f"₹{val/1e7:.1f}Cr"
+    if val >= 1e5: return f"₹{val/1e5:.1f}L"
+    if val >= 1e3: return f"₹{val/1e3:.0f}K"
+    return f"₹{int(val):,}"
+
 def combined_chart(data, x, title):
     fig = make_subplots(specs=[[{"secondary_y":True}]])
-    fig.add_trace(go.Bar(x=data[x],y=data["Final_Sale"],name="Final Sale (₹)",
-                         marker_color="#6C3483",opacity=0.85), secondary_y=False)
-    fig.add_trace(go.Scatter(x=data[x],y=data["Cancellation"],name="Cancellation (₹)",
-                             line=dict(color="#e74c3c",width=2.5),mode="lines+markers"), secondary_y=True)
-    fig.add_trace(go.Scatter(x=data[x],y=data["Returns"],name="Returns (₹)",
-                             line=dict(color="#e67e22",width=2.5,dash="dot"),mode="lines+markers"), secondary_y=True)
-    fig.update_layout(title=title,template="plotly_dark",height=400,
-                      legend=dict(orientation="h",y=1.12),hovermode="x unified")
-    fig.update_yaxes(title_text="Final Sale (₹)",secondary_y=False)
-    fig.update_yaxes(title_text="Cancel + Returns (₹)",secondary_y=True)
+    fig.add_trace(go.Bar(
+        x=data[x], y=data["Final_Sale"], name="Final Sale (₹)",
+        marker_color="#6C3483", opacity=0.85,
+        hovertemplate="<b>Final Sale</b><br>₹%{customdata}<extra></extra>",
+        customdata=["<br>₹".join([indian_fmt(v)]) if False else indian_fmt(v) for v in data["Final_Sale"]]
+    ), secondary_y=False)
+    fig.add_trace(go.Scatter(
+        x=data[x], y=data["Cancellation"], name="Cancellation (₹)",
+        line=dict(color="#e74c3c",width=2.5), mode="lines+markers",
+        hovertemplate="<b>Cancellation</b><br>₹%{customdata}<extra></extra>",
+        customdata=[indian_fmt(v) for v in data["Cancellation"]]
+    ), secondary_y=True)
+    fig.add_trace(go.Scatter(
+        x=data[x], y=data["Returns"], name="Returns (₹)",
+        line=dict(color="#e67e22",width=2.5,dash="dot"), mode="lines+markers",
+        hovertemplate="<b>Returns</b><br>₹%{customdata}<extra></extra>",
+        customdata=[indian_fmt(v) for v in data["Returns"]]
+    ), secondary_y=True)
+    fig.update_layout(title=title, template="plotly_dark", height=400,
+                      legend=dict(orientation="h",y=1.12), hovermode="x unified")
+    fig.update_yaxes(title_text="Final Sale (₹)", secondary_y=False,
+                     tickformat=",.0f", tickprefix="₹")
+    fig.update_yaxes(title_text="Cancel + Returns (₹)", secondary_y=True,
+                     tickformat=",.0f", tickprefix="₹")
     return fig
 
 def pct_color(val):
@@ -148,8 +195,31 @@ def pct_color(val):
     except: pass
     return ""
 
+def fmt_inr(v):
+    try: return "₹" + indian_fmt(float(v))
+    except: return str(v)
+
+def fmt_units(v):
+    try: return indian_fmt(float(v))
+    except: return str(v)
+
+def fmt_pct(v):
+    try: return f"{float(v):.1f}%"
+    except: return str(v)
+
 def render_table(df, fmt, pct_cols=[]):
-    styled = df.style.format(fmt, na_rep="—")
+    # Replace ₹{:,.0f} formatters with Indian rupee format
+    new_fmt = {}
+    for col, f in fmt.items():
+        if "₹" in str(f):
+            new_fmt[col] = fmt_inr
+        elif "%" in str(f):
+            new_fmt[col] = fmt_pct
+        elif "{:,.0f}" in str(f):
+            new_fmt[col] = fmt_units
+        else:
+            new_fmt[col] = f
+    styled = df.style.format(new_fmt, na_rep="—")
     for col in pct_cols:
         if col in df.columns:
             fn = getattr(styled, "map", None) or getattr(styled, "applymap", None)
@@ -516,9 +586,9 @@ def main():
         with c4: metric_card("Cancel Rate",cr,prefix="",suffix="%")
         with c5: metric_card("Total Sale (Period)",df["Final Sale Amount"].sum())
 
-    # Channel split — uses df_dated (date-filtered only, not brand filtered for full picture)
+    # Channel split — uses df (fully filtered)
     st.markdown("<div style='background:linear-gradient(90deg,rgba(46,134,193,0.12),rgba(230,126,34,0.12));border:1px solid #2a2a4a;border-radius:12px;padding:11px 18px;margin:20px 0 8px 0'><span style='font-size:15px;font-weight:700;color:#D7BDE2'>📡 National vs Shopsy — Total Period</span></div>", unsafe_allow_html=True)
-    ch_grp = df_dated.groupby("Channel").agg(Final_Sale=("Final Sale Amount","sum"),
+    ch_grp = df.groupby("Channel").agg(Final_Sale=("Final Sale Amount","sum"),
         Cancellation=("Cancellation Amount","sum"), Returns=("Return Amount","sum"),
         Units=("Final Sale Units","sum")).reset_index()
     ch_grp["Cancel Rate %"]=(ch_grp["Cancellation"]/(ch_grp["Final_Sale"]+ch_grp["Cancellation"]).replace(0,np.nan)*100).round(1)
@@ -535,13 +605,13 @@ def main():
     render_table(ch_grp.rename(columns={"Final_Sale":"Final Sale (₹)","Cancellation":"Cancel (₹)","Returns":"Returns (₹)","Units":"Units Sold"}),
                  {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Returns (₹)":"₹{:,.0f}","Units Sold":"{:,.0f}","Cancel Rate %":"{:.1f}%"})
 
-    # Brand-wise — uses df_dated
+    # Brand-wise — uses df (fully filtered)
     st.markdown("<div style='background:rgba(108,52,131,0.12);border:1px solid #2a2a4a;border-radius:12px;padding:11px 18px;margin:20px 0 8px 0'><span style='font-size:15px;font-weight:700;color:#D7BDE2'>🏷️ Brand-wise Performance</span></div>", unsafe_allow_html=True)
-    bg=df_dated.groupby(["Brand","Channel"]).agg(Final_Sale=("Final Sale Amount","sum")).reset_index()
+    bg=df.groupby(["Brand","Channel"]).agg(Final_Sale=("Final Sale Amount","sum")).reset_index()
     st.plotly_chart(px.bar(bg,x="Brand",y="Final_Sale",color="Channel",barmode="group",
         template="plotly_dark",title="Brand-wise Final Sale by Channel",
         color_discrete_map=CHANNEL_COLORS,labels={"Final_Sale":"Final Sale (₹)"}), use_container_width=True)
-    bg2=df_dated.groupby("Brand").agg(Final_Sale=("Final Sale Amount","sum"),Cancellation=("Cancellation Amount","sum"),
+    bg2=df.groupby("Brand").agg(Final_Sale=("Final Sale Amount","sum"),Cancellation=("Cancellation Amount","sum"),
         Returns=("Return Amount","sum"),Units=("Final Sale Units","sum")).reset_index().sort_values("Final_Sale",ascending=False)
     bg2["Cancel Rate %"]=(bg2["Cancellation"]/(bg2["Final_Sale"]+bg2["Cancellation"]).replace(0,np.nan)*100).round(1)
     render_table(bg2.rename(columns={"Final_Sale":"Final Sale (₹)","Cancellation":"Cancel (₹)","Returns":"Returns (₹)","Units":"Units Sold"}),
@@ -550,17 +620,17 @@ def main():
     # Daily trend — uses df (fully filtered)
     st.markdown("<div style='background:rgba(46,204,113,0.08);border:1px solid #2a2a4a;border-radius:12px;padding:11px 18px;margin:20px 0 8px 0'><span style='font-size:15px;font-weight:700;color:#D7BDE2'>📈 Daily Trend</span></div>", unsafe_allow_html=True)
     st.plotly_chart(combined_chart(daily_agg(df),"Order Date","Daily: Final Sale (Bar) | Cancel & Returns (Line)"), use_container_width=True)
-    dt_ch = df_dated.copy(); dt_ch["Order Date"]=pd.to_datetime(dt_ch["Order Date"])
+    dt_ch = df.copy(); dt_ch["Order Date"]=pd.to_datetime(dt_ch["Order Date"])
     dt_ch = dt_ch.groupby(["Order Date","Channel"]).agg(Final_Sale=("Final Sale Amount","sum")).reset_index()
     st.plotly_chart(px.line(dt_ch,x="Order Date",y="Final_Sale",color="Channel",
         title="Daily Final Sale: National vs Shopsy",template="plotly_dark",
         color_discrete_map=CHANNEL_COLORS,labels={"Final_Sale":"Final Sale (₹)"}), use_container_width=True)
 
     # ════════════════════════════════════════════════════════════════════
-    # 2. CHANNEL SECTIONS — uses df_dated (not brand filtered)
+    # 2. CHANNEL SECTIONS — uses df (fully filtered)
     # ════════════════════════════════════════════════════════════════════
-    render_channel_section(df_dated, "National", "national")
-    render_channel_section(df_dated, "Shopsy", "shopsy")
+    render_channel_section(df, "National", "national")
+    render_channel_section(df, "Shopsy", "shopsy")
 
     # ════════════════════════════════════════════════════════════════════
     # 3. BELLAVITA FRAG vs NON-FRAG
@@ -568,7 +638,7 @@ def main():
     if brand_f == "Bellavita":
         st.markdown("<div id='fragrance'></div>", unsafe_allow_html=True)
         sec_hdr("🌸 Fragrance vs Non-Fragrance","fragrance")
-        bv=df_dated[df_dated["Brand"]=="Bellavita"].copy()
+        bv=df[df["Brand"]=="Bellavita"].copy()
         bv["Order Date"]=pd.to_datetime(bv["Order Date"])
         bv["Type"]=bv["Category"].apply(lambda c:"Fragrance" if any(k in str(c).lower() for k in frag_kw) else "Non-Fragrance")
         tg=bv.groupby("Type").agg(Final_Sale=("Final Sale Amount","sum"),Cancellation=("Cancellation Amount","sum"),Returns=("Return Amount","sum"),Units=("Final Sale Units","sum")).reset_index()
@@ -655,8 +725,8 @@ def main():
     st.caption("Auto-generated based on filtered data. Updates with every upload.")
     for i,a in enumerate(action_points(df),1): st.markdown(f"**{i}.** {a}")
     st.markdown("#### Brand-wise Actions")
-    for b in sorted(df_dated["Brand"].unique()):
-        bdf=df_dated[df_dated["Brand"]==b]
+    for b in sorted(df["Brand"].unique()):
+        bdf=df[df["Brand"]==b]
         bdates=sorted(pd.to_datetime(bdf["Order Date"]).unique())
         if bdates:
             td2=bdf[pd.to_datetime(bdf["Order Date"])==bdates[-1]]
