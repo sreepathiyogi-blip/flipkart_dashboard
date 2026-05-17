@@ -1,1825 +1,1252 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import gspread
-from google.oauth2.service_account import Credentials
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import warnings
 warnings.filterwarnings("ignore")
 
-try:
-    from sku_master_section import render_sku_sidebar, render_sku_section, set_client_fn
-    SKU_MODULE_OK = True
-except Exception as _e:
-    SKU_MODULE_OK = False
-    import builtins
-    builtins._SKU_ERR = str(_e)
-
 st.set_page_config(
-    page_title="Flipkart Sales Dashboard",
+    page_title="Flipkart Business Intelligence Dashboard",
     page_icon="🛒",
     layout="wide",
-    initial_sidebar_state="collapsed",
-    menu_items={"Get Help": None, "Report a bug": None, "About": "One Guardian — Flipkart Sales Dashboard"}
+    initial_sidebar_state="expanded"
 )
 
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
-REQUIRED_COLS = ["Product Id","SKU ID","Category","Brand","Vertical","Order Date","Fulfillment Type",
-                 "Location Id","Gross Units","GMV","Cancellation Units","Cancellation Amount",
-                 "Return Units","Return Amount","Final Sale Units","Final Sale Amount"]
-NUMERIC_COLS = ["Gross Units","GMV","Cancellation Units","Cancellation Amount",
-                "Return Units","Return Amount","Final Sale Units","Final Sale Amount"]
-BRAND_COLORS = {"Bellavita":"#9B59B6","Kenaz":"#3498DB","Embarouge":"#E74C3C","HipHop Skincare":"#2ECC71","Guzz":"#F39C12"}
-PIE_COLORS = [
-    "#9B59B6",  # vivid purple
-    "#2ECC71",  # emerald green
-    "#E74C3C",  # red
-    "#3498DB",  # blue
-    "#F39C12",  # amber
-    "#1ABC9C",  # teal
-    "#E91E63",  # hot pink
-    "#FF5722",  # deep orange
-    "#00BCD4",  # cyan
-    "#8BC34A",  # lime green
-    "#FF9800",  # orange
-    "#673AB7",  # deep purple
-]
+# ─────────────────────────────────────────────
+# CONSTANTS & CONFIG
+# ─────────────────────────────────────────────
+FRAG_KW = ['fragrance','perfume','deodorant','deo','edt','edp','attar','body mist','body spray','rollon','roll on']
+BRAND_COLORS = {
+    "BELLAVITA": "#9B59B6",
+    "Kenaz": "#3498DB",
+    "Embarouge": "#E74C3C",
+    "HipHop Skincare": "#2ECC71",
+    "Bella vita organic": "#F39C12",
+    "Started with Guzz": "#1ABC9C"
+}
+PALETTE = ["#9B59B6","#3498DB","#2ECC71","#E74C3C","#F39C12","#1ABC9C","#E91E63","#FF5722","#00BCD4","#8BC34A"]
+MONTH_ORDER = ['2026-01','2026-02','2026-03','2026-04','2026-05']
+MONTH_LABELS = {'2026-01':'Jan 26','2026-02':'Feb 26','2026-03':'Mar 26','2026-04':'Apr 26','2026-05':'May 26'}
 
-FRAG_COLORS = {"Fragrance": "#C39BD3", "Non-Fragrance": "#2ECC71"}
-FRAG_KW = ["fragrance","perfume","deodorant","deo","edt","edp","attar","body mist","body spray"]
-BELLAVITA_NAMES = ["BELLAVITA","Bella vita organic","Bellavita","bella vita","BELLA VITA ORGANIC","bellavita"]
-CHANNEL_COLORS = {"Shopsy":"#E67E22","National":"#2E86C1"}
-
+# ─────────────────────────────────────────────
+# FORMATTING HELPERS
+# ─────────────────────────────────────────────
 def indian_fmt(n):
-    """Format number in Indian number system: 1,00,000 / 10,00,000 / 1,00,00,000"""
     try:
         n = float(n)
-        if n < 0:
-            return "-" + indian_fmt(-n)
-        n = int(round(n))
+        if pd.isna(n): return "—"
+        neg = n < 0
+        n = abs(int(round(n)))
         s = str(n)
-        if len(s) <= 3:
-            return s
-        # Last 3 digits, then groups of 2
-        last3 = s[-3:]
-        rest = s[:-3]
-        groups = []
-        while len(rest) > 2:
-            groups.append(rest[-2:])
-            rest = rest[:-2]
-        if rest:
-            groups.append(rest)
-        return ",".join(reversed(groups)) + "," + last3
-    except:
-        return str(n)
+        if len(s) <= 3: r = s
+        else:
+            last3 = s[-3:]
+            rest = s[:-3]
+            groups = []
+            while len(rest) > 2:
+                groups.append(rest[-2:])
+                rest = rest[:-2]
+            if rest: groups.append(rest)
+            r = ",".join(reversed(groups)) + "," + last3
+        return ("-₹" if neg else "₹") + r
+    except: return str(n)
 
-def indian_rupee(n):
-    return "₹" + indian_fmt(n)
+def cr(n): return indian_fmt(n)
+def pct(n, decimals=1):
+    try: return f"{float(n):.{decimals}f}%"
+    except: return "—"
+def badge(val, good_threshold=0, inverse=False):
+    try:
+        v = float(val)
+        good = (v >= good_threshold) if not inverse else (v <= good_threshold)
+        color = "#2ecc71" if good else "#e74c3c"
+        arrow = "▲" if v >= 0 else "▼"
+        return f'<span style="color:{color};font-weight:700">{arrow} {abs(v):.1f}%</span>'
+    except: return "—"
 
-def normalize_brands(df):
-    df = df.copy()
-    df["Brand"] = df["Brand"].astype(str).str.strip()
-    df["Brand"] = df["Brand"].apply(lambda x: "Bellavita" if x in BELLAVITA_NAMES else x)
-    return df
+# ─────────────────────────────────────────────
+# CSS STYLING
+# ─────────────────────────────────────────────
+st.markdown("""<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+html,body,.main,.stApp{background:#07071a!important;font-family:'Inter',sans-serif!important;color:#e0e0f0!important}
+.block-container{padding:1.5rem 2rem!important;max-width:100%!important}
+section[data-testid="stSidebar"]{background:linear-gradient(180deg,#0d0d24,#111130)!important;min-width:280px!important;max-width:280px!important;border-right:1px solid #1e1e40!important}
+.stButton>button{background:linear-gradient(135deg,#6C3483,#9B59B6)!important;color:white!important;border:none!important;border-radius:8px!important;font-weight:600!important}
+div[data-testid="stDataFrame"]{border-radius:10px!important;overflow:hidden!important;border:1px solid #1e1e3a!important}
+.stSelectbox>div>div,.stMultiSelect>div>div{background:#0f0f2a!important;border:1px solid #2a2a4a!important;color:white!important;border-radius:8px!important}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-thumb{background:#2a2a4a;border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:#6C3483}
+#MainMenu,footer{visibility:hidden}
+.metric-card{background:linear-gradient(135deg,#0f0f28,#161638);padding:18px 20px;border-radius:14px;border:1px solid #1e1e40;border-left:4px solid #6C3483;margin-bottom:10px;box-shadow:0 4px 20px rgba(0,0,0,0.4)}
+.metric-label{color:#7777aa;font-size:11px;font-weight:600;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:5px}
+.metric-value{color:#fff;font-size:22px;font-weight:800;letter-spacing:-0.5px}
+.metric-delta{font-size:12px;margin-top:3px}
+.section-header{background:linear-gradient(90deg,rgba(108,52,131,0.15),transparent);border-left:3px solid #9B59B6;padding:10px 16px;border-radius:0 8px 8px 0;margin:30px 0 16px 0}
+.section-title{color:#D7BDE2;font-size:18px;font-weight:700;margin:0}
+.insight-box{background:rgba(108,52,131,0.1);border:1px solid rgba(108,52,131,0.35);border-radius:10px;padding:14px 18px;margin:10px 0}
+.warning-box{background:rgba(231,76,60,0.1);border:1px solid rgba(231,76,60,0.35);border-radius:10px;padding:14px 18px;margin:10px 0}
+.success-box{background:rgba(46,204,113,0.1);border:1px solid rgba(46,204,113,0.35);border-radius:10px;padding:14px 18px;margin:10px 0}
+.info-box{background:rgba(52,152,219,0.1);border:1px solid rgba(52,152,219,0.35);border-radius:10px;padding:14px 18px;margin:10px 0}
+</style>""", unsafe_allow_html=True)
 
-def add_channel(df):
-    df = df.copy()
-    df["Channel"] = df["Vertical"].astype(str).apply(
-        lambda v: "Shopsy" if v.strip().lower().startswith("shopsy") else "National"
+# ─────────────────────────────────────────────
+# DATA LOADING
+# ─────────────────────────────────────────────
+@st.cache_data
+def load_data():
+    earn = pd.read_excel('/mnt/user-data/uploads/JFMAM_26_earnmore_report__1_.xlsx')
+    search = pd.read_excel('/mnt/user-data/uploads/Search_Traffic_Report__1_.xlsx')
+    master = pd.read_excel('/mnt/user-data/uploads/Master_FSNs_Standardized_1.xlsx')
+
+    # EarnMore cleaning
+    earn['Order Date'] = pd.to_datetime(earn['Order Date'])
+    earn['Month'] = earn['Order Date'].dt.to_period('M').astype(str)
+    earn['Week'] = earn['Order Date'].dt.to_period('W').apply(lambda r: r.start_time.strftime('%Y-%m-%d'))
+    earn['Channel'] = earn['Vertical'].apply(lambda v: 'Shopsy' if str(v).lower().startswith('shopsy') else 'National')
+    earn['Type'] = earn['Category'].apply(
+        lambda c: 'Fragrance' if any(k in str(c).lower() for k in FRAG_KW) else 'Non-Fragrance'
     )
-    return df
+    # Normalize brand
+    earn['Brand'] = earn['Brand'].replace({'Bellavita':'BELLAVITA','bella vita':'BELLAVITA','BELLA VITA ORGANIC':'Bella vita organic'})
+    earn['Cancel_Rate'] = (earn['Cancellation Amount'] / (earn['Final Sale Amount'] + earn['Cancellation Amount'])).fillna(0) * 100
+    earn['Return_Rate'] = (earn['Return Amount'] / (earn['Final Sale Amount'] + earn['Return Amount'])).fillna(0) * 100
 
-@st.cache_resource
-def get_gsheet_client():
-    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
-    return gspread.authorize(creds)
+    # Search cleaning
+    search['Impression Date'] = pd.to_datetime(search['Impression Date'], errors='coerce')
+    search['Month'] = search['Impression Date'].dt.to_period('M').astype(str)
+    search['Brand'] = search['Brand'].replace({'Bellavita':'BELLAVITA'})
 
-if SKU_MODULE_OK:
-    try:
-        set_client_fn(get_gsheet_client)
-    except:
-        SKU_MODULE_OK = False
+    # Master cleaning
+    master.columns = master.columns.str.strip()
+    master = master.rename(columns={
+        'Title ': 'Title', 'F  Subcat': 'F_Subcat', 'Master Category ': 'Master_Category',
+        'NPD /EPD/ Exclusive': 'Exclusive', 'Short Form ': 'Short_Form', 'FULFILMENT TYPE': 'Fulfilment_Type'
+    })
 
-def get_or_create_sheet(client, name):
-    try: return client.open(name)
-    except gspread.SpreadsheetNotFound:
-        sh = client.create(name)
-        sh.share(st.secrets["gcp_service_account"]["client_email"], perm_type="user", role="writer")
-        return sh
+    return earn, search, master
 
-TEXT_COLS = {"Product Id", "SKU ID", "Category", "Brand", "Vertical",
-             "Order Date", "Fulfillment Type", "Location Id", "Channel"}
+earn, search, master = load_data()
 
-def clean_df(df):
-    for col in df.columns:
-        if col in TEXT_COLS:
-            df[col] = df[col].fillna("").astype(str).replace("nan", "").replace("0.0", "")
-        elif col in NUMERIC_COLS:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).replace([float("inf"),float("-inf")],0)
-        else:
-            non_null = df[col].dropna()
-            try:
-                pd.to_numeric(non_null, errors="raise")
-                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-            except (ValueError, TypeError):
-                df[col] = df[col].fillna("").astype(str)
-    return df
+# ─────────────────────────────────────────────
+# SIDEBAR FILTERS
+# ─────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("""<div style='text-align:center;padding:16px 0 8px 0'>
+        <div style='font-size:28px'>🛒</div>
+        <div style='font-size:16px;font-weight:800;color:#D7BDE2;margin-top:4px'>Flipkart BI Dashboard</div>
+        <div style='font-size:10px;color:#5555aa;letter-spacing:1.5px;text-transform:uppercase;margin-top:2px'>Enterprise Intelligence</div>
+    </div><hr style='border-color:#1e1e40'>""", unsafe_allow_html=True)
 
-@st.cache_data(ttl=300)
-def load_data(spreadsheet_name):
-    try:
-        client = get_gsheet_client()
-        ws = get_or_create_sheet(client, spreadsheet_name).sheet1
-        data = ws.get_all_records()
-        if not data: return pd.DataFrame(columns=REQUIRED_COLS)
-        df = pd.DataFrame(data)
-        df["Order Date"] = pd.to_datetime(df["Order Date"], errors="coerce")
-        for col in NUMERIC_COLS:
-            if col in df.columns: df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-        df = normalize_brands(df)
-        df = add_channel(df)
-        return df
-    except Exception as e:
-        st.error(f"Load error: {e}"); return pd.DataFrame(columns=REQUIRED_COLS)
-
-def save_data(client, new_df, spreadsheet_name):
-    sh = get_or_create_sheet(client, spreadsheet_name)
-    ws = sh.sheet1
-    existing = ws.get_all_records()
-    new_df = clean_df(normalize_brands(add_channel(new_df.copy())))
-    if not existing:
-        ws.update([new_df.columns.tolist()] + new_df.astype(str).values.tolist())
-        return len(new_df), 0
-    ex = normalize_brands(add_channel(pd.DataFrame(existing)))
-    ex["Order Date"] = pd.to_datetime(ex["Order Date"], errors="coerce")
-    new_df["Order Date"] = pd.to_datetime(new_df["Order Date"], errors="coerce")
-    keys = ["Product Id","SKU ID","Order Date","Brand"]
-    ex_keys = ex[keys].astype(str).apply("_".join, axis=1)
-    new_keys = new_df[keys].astype(str).apply("_".join, axis=1)
-    truly_new = new_df[~new_keys.isin(ex_keys)]
-    if len(truly_new) == 0: return 0, len(new_df)
-    all_cols = list(dict.fromkeys(ex.columns.tolist() + truly_new.columns.tolist()))
-    combined = pd.concat([ex.reindex(columns=all_cols, fill_value=""),
-                          truly_new.reindex(columns=all_cols, fill_value="")], ignore_index=True)
-    combined["Order Date"] = pd.to_datetime(combined["Order Date"], errors="coerce").dt.strftime("%Y-%m-%d")
-    combined = clean_df(combined)
-    combined = combined.sort_values("Order Date", ascending=False)
-    ws.clear()
-    ws.update([combined.columns.tolist()] + combined.astype(str).values.tolist())
-    return len(truly_new), len(new_df) - len(truly_new)
-
-def safe_pct(new, old): return round((new-old)/old*100,1) if old != 0 else None
-
-def pct_badge(pct, inverse=False):
-    if pct is None: return "<span style='color:#888'>—</span>"
-    good = (pct>=0) if not inverse else (pct<=0)
-    c = "#2ecc71" if good else "#e74c3c"
-    s = "▲" if pct>=0 else "▼"
-    return f"<span style='color:{c};font-weight:600'>{s} {abs(pct):.1f}%</span>"
-
-def metric_card(label, val, delta="", prefix="₹", suffix=""):
-    vs = f"{prefix}{indian_fmt(val)}{suffix}"
-    st.markdown(f"""
-    <div style='background:linear-gradient(135deg,#13132a,#1a1a35);padding:18px 20px;border-radius:14px;
-                border:1px solid #2a2a4a;border-left:4px solid #6C3483;margin-bottom:8px;
-                box-shadow:0 4px 20px rgba(0,0,0,0.3)'>
-        <div style='color:#8888aa;font-size:11px;font-weight:500;letter-spacing:0.5px;
-                    text-transform:uppercase;margin-bottom:6px'>{label}</div>
-        <div style='color:#ffffff;font-size:22px;font-weight:800;letter-spacing:-0.5px;margin-bottom:4px'>{vs}</div>
-        <div style='font-size:12px;margin-top:2px'>{delta}</div>
-    </div>""", unsafe_allow_html=True)
-
-def sec_hdr(title, anchor):
-    st.markdown(f"""
-    <div id='{anchor}' style='margin-top:40px;margin-bottom:20px'>
-        <h2 style='color:#D7BDE2;font-size:22px;font-weight:700;margin:0;padding-bottom:10px;
-                   border-bottom:2px solid;border-image:linear-gradient(90deg,#6C3483,#2E86C1) 1;
-                   letter-spacing:-0.3px'>{title}</h2>
-    </div>""", unsafe_allow_html=True)
-
-def ind_tick(val, _):
-    """Indian format for plotly axis ticks"""
-    if val >= 1e7: return f"₹{val/1e7:.1f}Cr"
-    if val >= 1e5: return f"₹{val/1e5:.1f}L"
-    if val >= 1e3: return f"₹{val/1e3:.0f}K"
-    return f"₹{int(val):,}"
-
-def combined_chart(data, x, title):
-    fig = make_subplots(specs=[[{"secondary_y":True}]])
-    fig.add_trace(go.Bar(
-        x=data[x], y=data["Final_Sale"], name="Final Sale (₹)",
-        marker_color="#6C3483", opacity=0.85,
-        hovertemplate="<b>Final Sale</b><br>₹%{customdata}<extra></extra>",
-        customdata=["<br>₹".join([indian_fmt(v)]) if False else indian_fmt(v) for v in data["Final_Sale"]]
-    ), secondary_y=False)
-    fig.add_trace(go.Scatter(
-        x=data[x], y=data["Cancellation"], name="Cancellation (₹)",
-        line=dict(color="#e74c3c",width=2.5), mode="lines+markers",
-        hovertemplate="<b>Cancellation</b><br>₹%{customdata}<extra></extra>",
-        customdata=[indian_fmt(v) for v in data["Cancellation"]]
-    ), secondary_y=True)
-    fig.add_trace(go.Scatter(
-        x=data[x], y=data["Returns"], name="Returns (₹)",
-        line=dict(color="#e67e22",width=2.5,dash="dot"), mode="lines+markers",
-        hovertemplate="<b>Returns</b><br>₹%{customdata}<extra></extra>",
-        customdata=[indian_fmt(v) for v in data["Returns"]]
-    ), secondary_y=True)
-    fig.update_layout(title=title, template="plotly_dark", height=400,
-                      legend=dict(orientation="h",y=1.12), hovermode="x unified")
-    fig.update_yaxes(title_text="Final Sale (₹)", secondary_y=False,
-                     tickformat=",.0f", tickprefix="₹")
-    fig.update_yaxes(title_text="Cancel + Returns (₹)", secondary_y=True,
-                     tickformat=",.0f", tickprefix="₹")
-    return fig
-
-def pct_color(val):
-    try:
-        v = float(str(val).replace("%",""))
-        if v > 0: return "color: #2ecc71; font-weight:600"
-        if v < 0: return "color: #e74c3c; font-weight:600"
-    except: pass
-    return ""
-
-def fmt_inr(v):
-    try: return "₹" + indian_fmt(float(v))
-    except: return str(v)
-
-def fmt_units(v):
-    try: return indian_fmt(float(v))
-    except: return str(v)
-
-def fmt_pct(v):
-    try: return f"{float(v):.1f}%"
-    except: return str(v)
-
-def render_table(df, fmt, pct_cols=[]):
-    # Replace ₹{:,.0f} formatters with Indian rupee format
-    new_fmt = {}
-    for col, f in fmt.items():
-        if "₹" in str(f):
-            new_fmt[col] = fmt_inr
-        elif "%" in str(f):
-            new_fmt[col] = fmt_pct
-        elif "{:,.0f}" in str(f):
-            new_fmt[col] = fmt_units
-        else:
-            new_fmt[col] = f
-    styled = df.style.format(new_fmt, na_rep="—")
-    for col in pct_cols:
-        if col in df.columns:
-            fn = getattr(styled, "map", None) or getattr(styled, "applymap", None)
-            styled = fn(lambda v: pct_color(v), subset=[col])
-    st.dataframe(styled, use_container_width=True, hide_index=True)
-
-def daily_agg(df):
-    df = df.copy(); df["Order Date"] = pd.to_datetime(df["Order Date"])
-    return df.groupby("Order Date").agg(
-        Final_Sale=("Final Sale Amount","sum"), Cancellation=("Cancellation Amount","sum"),
-        Returns=("Return Amount","sum"), Sale_Units=("Final Sale Units","sum")
-    ).reset_index().sort_values("Order Date")
-
-def dod_data(df):
-    d = daily_agg(df)
-    d["DoD_Sale_%"] = d["Final_Sale"].pct_change()*100
-    d["DoD_Cancel_%"] = d["Cancellation"].pct_change()*100
-    d["DoD_Return_%"] = d["Returns"].pct_change()*100
-    return d
-
-def wow_data(df):
-    df = df.copy(); df["Order Date"] = pd.to_datetime(df["Order Date"])
-    df["Week"] = df["Order Date"].dt.to_period("W").apply(lambda r: r.start_time)
-    w = df.groupby("Week").agg(Final_Sale=("Final Sale Amount","sum"),
-        Cancellation=("Cancellation Amount","sum"), Returns=("Return Amount","sum")
-    ).reset_index().sort_values("Week")
-    w["WoW_Sale_%"] = w["Final_Sale"].pct_change()*100
-    w["WoW_Cancel_%"] = w["Cancellation"].pct_change()*100
-    w["WoW_Return_%"] = w["Returns"].pct_change()*100
-    return w
-
-def mom_data(df):
-    df = df.copy(); df["Order Date"] = pd.to_datetime(df["Order Date"])
-    df["Month"] = df["Order Date"].dt.to_period("M").apply(lambda r: r.start_time)
-    m = df.groupby("Month").agg(Final_Sale=("Final Sale Amount","sum"),
-        Cancellation=("Cancellation Amount","sum"), Returns=("Return Amount","sum")
-    ).reset_index().sort_values("Month")
-    m["MoM_Sale_%"] = m["Final_Sale"].pct_change()*100
-    m["MoM_Cancel_%"] = m["Cancellation"].pct_change()*100
-    m["MoM_Return_%"] = m["Returns"].pct_change()*100
-    return m
-
-def declining_skus(df, top_n=15):
-    try:
-        df = df.copy(); df["Order Date"] = pd.to_datetime(df["Order Date"])
-        df["Week"] = df["Order Date"].dt.to_period("W").apply(lambda r: r.start_time)
-        weeks = sorted(df["Week"].unique())
-        if len(weeks) < 2: return pd.DataFrame()
-        lw = df[df["Week"]==weeks[-1]].groupby("SKU ID")["Final Sale Amount"].sum()
-        pw = df[df["Week"]==weeks[-2]].groupby("SKU ID")["Final Sale Amount"].sum()
-        lw.index = lw.index.astype(str); pw.index = pw.index.astype(str)
-        cmp = pd.DataFrame({"Last Week":lw,"Prev Week":pw}).fillna(0)
-        cmp["Change %"] = ((cmp["Last Week"]-cmp["Prev Week"])/cmp["Prev Week"].replace(0,np.nan)*100).round(1)
-        cmp = cmp[cmp["Prev Week"]>0].sort_values("Change %")
-        cmp = cmp[cmp["Change %"]<0].head(top_n).reset_index()
-        cmp.columns = ["SKU ID","Last Week","Prev Week","Change %"]
-        meta = df[["SKU ID","Brand","Category","Channel"]].drop_duplicates("SKU ID").copy()
-        meta["SKU ID"] = meta["SKU ID"].astype(str)
-        return cmp.merge(meta, on="SKU ID", how="left")
-    except: return pd.DataFrame()
-
-def action_points(df):
-    actions = []
-    df = df.copy(); df["Order Date"] = pd.to_datetime(df["Order Date"])
-    dates = sorted(df["Order Date"].unique())
-    if len(dates)>=2:
-        td=df[df["Order Date"]==dates[-1]]; yd=df[df["Order Date"]==dates[-2]]
-        ts,tc,tr = td["Final Sale Amount"].sum(),td["Cancellation Amount"].sum(),td["Return Amount"].sum()
-        ys,yc,yr = yd["Final Sale Amount"].sum(),yd["Cancellation Amount"].sum(),yd["Return Amount"].sum()
-        sp=safe_pct(ts,ys)
-        if sp and sp<-15: actions.append(f"🔴 **Sales dropped {abs(sp):.1f}% DoD** (₹{ys:,.0f}→₹{ts:,.0f}). Check top SKU stock & listing.")
-        elif sp and sp>20: actions.append(f"🟢 **Sales grew {sp:.1f}% DoD** (₹{ys:,.0f}→₹{ts:,.0f}). Identify driver & scale.")
-        cp=safe_pct(tc,yc)
-        if cp and cp>20: actions.append(f"🔴 **Cancellations spiked {cp:.1f}% DoD**. Check pricing, promise dates & inventory.")
-        rp=safe_pct(tr,yr)
-        if rp and rp>20: actions.append(f"🟡 **Returns up {rp:.1f}% DoD**. Review return reasons.")
-        if ts+tc>0:
-            cr=tc/(ts+tc)*100
-            if cr>15: actions.append(f"🔴 **Cancellation rate {cr:.1f}%** on latest day. Investigate fill rate.")
-    dec=declining_skus(df,5)
-    if not dec.empty:
-        skus=", ".join(dec["SKU ID"].head(3).astype(str).tolist())
-        actions.append(f"📉 **Top declining SKUs (WoW):** {skus}. Run ads boost or price correction.")
-    sg=df.groupby("SKU ID").agg(sale=("Final Sale Amount","sum"),cancel=("Cancellation Amount","sum"))
-    sg["cr"]=sg["cancel"]/(sg["sale"]+sg["cancel"]).replace(0,np.nan)
-    bad=sg[(sg["cr"]>0.3)&(sg["sale"]>1000)]
-    if not bad.empty: actions.append(f"⚠️ **{len(bad)} SKUs with >30% cancel rate**: {", ".join(bad.index.astype(str)[:3].tolist())}")
-    months=sorted(df["Order Date"].dt.to_period("M").unique())
-    if len(months)>=2:
-        m1=df[df["Order Date"].dt.to_period("M")==months[-1]]["Final Sale Amount"].sum()
-        m0=df[df["Order Date"].dt.to_period("M")==months[-2]]["Final Sale Amount"].sum()
-        mp=safe_pct(m1,m0)
-        if mp and mp<-10: actions.append(f"📉 **MoM sales declined {abs(mp):.1f}%**. Review brand contribution & push promos.")
-    if "Channel" in df.columns:
-        total_sale = df["Final Sale Amount"].sum()
-        if total_sale > 0:
-            ch=df.groupby("Channel")["Final Sale Amount"].sum()
-            for ch_name, ch_val in ch.items():
-                actions.append(f"📊 **{ch_name} channel:** ₹{ch_val:,.0f} ({ch_val/total_sale*100:.1f}% of total sale)")
-    if not actions: actions.append("✅ All metrics look healthy. Push exclusives scale-up & monitor DoD.")
-    return actions
-
-def render_channel_section(df, channel_name, anchor):
-    ch_df = df[df["Channel"]==channel_name].copy()
-    if ch_df.empty:
-        st.info(f"No {channel_name} data in selected date range.")
-        return
-    st.markdown(f"<div id='{anchor}'></div>", unsafe_allow_html=True)
-    sec_hdr(f"{'🛍️' if channel_name=='Shopsy' else '🏪'} {channel_name} Channel", anchor)
-    dates = sorted(pd.to_datetime(ch_df["Order Date"]).unique())
-    td = ch_df[pd.to_datetime(ch_df["Order Date"])==dates[-1]] if dates else pd.DataFrame()
-    yd = ch_df[pd.to_datetime(ch_df["Order Date"])==dates[-2]] if len(dates)>=2 else pd.DataFrame()
-    ts = td["Final Sale Amount"].sum() if not td.empty else 0
-    tc = td["Cancellation Amount"].sum() if not td.empty else 0
-    tr = td["Return Amount"].sum() if not td.empty else 0
-    ys = yd["Final Sale Amount"].sum() if not yd.empty else 0
-    yc = yd["Cancellation Amount"].sum() if not yd.empty else 0
-    yr = yd["Return Amount"].sum() if not yd.empty else 0
-    cr = tc/(ts+tc)*100 if (ts+tc)>0 else 0
-    c1,c2,c3,c4 = st.columns(4)
-    with c1: metric_card(f"Today's Sale ({channel_name})", ts, pct_badge(safe_pct(ts,ys)))
-    with c2: metric_card("Cancellation", tc, pct_badge(safe_pct(tc,yc), inverse=True))
-    with c3: metric_card("Returns", tr, pct_badge(safe_pct(tr,yr), inverse=True))
-    with c4: metric_card("Cancel Rate", cr, prefix="", suffix="%")
-    bg = ch_df.groupby("Brand").agg(Final_Sale=("Final Sale Amount","sum"),
-        Cancellation=("Cancellation Amount","sum"), Returns=("Return Amount","sum"),
-        Units=("Final Sale Units","sum")).reset_index().sort_values("Final_Sale", ascending=False)
-    bg["Cancel Rate %"] = (bg["Cancellation"]/(bg["Final_Sale"]+bg["Cancellation"]).replace(0,np.nan)*100).round(1)
-    ca, cb = st.columns([3,2])
-    with ca:
-        fig_chb = px.bar(bg,x="Brand",y=["Final_Sale","Cancellation","Returns"],barmode="group",
-            template="plotly_dark",title=f"{channel_name}: Brand-wise Sale vs Cancel vs Returns",
-            color_discrete_map={"Final_Sale":"#6C3483","Cancellation":"#e74c3c","Returns":"#e67e22"},
-            labels={"value":"₹","variable":"Metric"})
-        max_chb = bg[["Final_Sale","Cancellation","Returns"]].max().max() if not bg.empty else 1
-        ticks_chb = [max_chb*i/5 for i in range(6)]
-        fig_chb.update_yaxes(tickvals=ticks_chb, ticktext=["₹"+indian_fmt(v) for v in ticks_chb])
-        st.plotly_chart(fig_chb, use_container_width=True)
-    with cb:
-        st.plotly_chart(px.pie(bg,values="Final_Sale",names="Brand",title=f"{channel_name}: Sale Share",
-            template="plotly_dark",color_discrete_sequence=px.colors.sequential.Purples_r), use_container_width=True)
-    render_table(bg.rename(columns={"Final_Sale":"Final Sale (₹)","Cancellation":"Cancel (₹)","Returns":"Returns (₹)","Units":"Units Sold"}),
-                 {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Returns (₹)":"₹{:,.0f}","Units Sold":"{:,.0f}","Cancel Rate %":"{:.1f}%"})
-    st.plotly_chart(combined_chart(daily_agg(ch_df),"Order Date",
-                    f"{channel_name}: Daily Final Sale (Bar) | Cancel & Returns (Line)"), use_container_width=True)
-    with st.expander(f"📅 {channel_name} DoD % Change Table"):
-        dod = dod_data(ch_df)
-        dd = dod.copy(); dd["Order Date"] = dd["Order Date"].dt.strftime("%d %b %Y")
-        dd = dd.rename(columns={"Final_Sale":"Final Sale (₹)","DoD_Sale_%":"DoD Sale %",
-                                 "Cancellation":"Cancel (₹)","DoD_Cancel_%":"DoD Cancel %",
-                                 "Returns":"Returns (₹)","DoD_Return_%":"DoD Return %","Sale_Units":"Units"})
-        render_table(dd[["Order Date","Final Sale (₹)","DoD Sale %","Cancel (₹)","DoD Cancel %","Returns (₹)","DoD Return %","Units"]],
-                     {"Final Sale (₹)":"₹{:,.0f}","DoD Sale %":"{:.1f}%","Cancel (₹)":"₹{:,.0f}",
-                      "DoD Cancel %":"{:.1f}%","Returns (₹)":"₹{:,.0f}","DoD Return %":"{:.1f}%","Units":"{:,.0f}"},
-                     pct_cols=["DoD Sale %","DoD Cancel %","DoD Return %"])
-
-def apply_indian_yaxis(fig, max_val=None, secondary=False):
-    """Apply Indian number format to plotly y-axis ticks"""
-    if max_val is None or max_val == 0:
-        return fig
-    ticks = [max_val * i / 5 for i in range(7)]
-    labels = ["₹" + indian_fmt(v) for v in ticks]
-    fig.update_yaxes(tickvals=ticks, ticktext=labels)
-    return fig
-
-def ind_px_bar(df, **kwargs):
-    """px.bar with Indian y-axis format"""
-    fig = px.bar(df, **kwargs)
-    y_col = kwargs.get("y")
-    if isinstance(y_col, str) and y_col in df.columns:
-        max_v = df[y_col].max()
-    elif isinstance(y_col, list):
-        max_v = df[y_col].max().max()
-    else:
-        max_v = None
-    if max_v and max_v > 0:
-        ticks = [max_v * i / 5 for i in range(7)]
-        fig.update_yaxes(tickvals=ticks, ticktext=["₹"+indian_fmt(v) for v in ticks])
-    fig.update_traces(hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>")
-    return fig
-
-def ind_px_line(df, **kwargs):
-    """px.line with Indian y-axis format"""
-    fig = px.line(df, **kwargs)
-    y_col = kwargs.get("y")
-    if isinstance(y_col, str) and y_col in df.columns:
-        max_v = df[y_col].max()
-        if max_v and max_v > 0:
-            ticks = [max_v * i / 5 for i in range(7)]
-            fig.update_yaxes(tickvals=ticks, ticktext=["₹"+indian_fmt(v) for v in ticks])
-    return fig
-
-def main():
-    st.markdown("""<style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-    html,body,.main,.stApp{background:#0a0a14!important;font-family:'Inter',sans-serif!important;color:#e8e8f0!important}
-    .block-container{padding:1.5rem 2rem!important;max-width:100%!important;transition:all 0.3s ease!important}
-    .main .block-container{padding-left:1rem!important;padding-right:1rem!important}
-    [data-testid="stSidebar"][aria-expanded="false"] ~ .main .block-container{
-        padding-left:3rem!important;
-        padding-right:1rem!important;
-        max-width:100%!important;
-    }
-    [data-testid="stSidebar"][aria-expanded="true"] ~ .main .block-container{
-        max-width:calc(100% - 270px)!important;
-    }
-
-    /* ── SIDEBAR ── */
-    section[data-testid="stSidebar"]{
-        background:linear-gradient(180deg,#0d0d1f,#111128)!important;
-        min-width:270px!important;
-        max-width:270px!important;
-    }
-    /* Style the collapse toggle button — make it visible and clean */
-    button[data-testid="baseButton-headerNoPadding"]{
-        background:#1a1a35!important;
-        border:1px solid #2a2a4a!important;
-        border-radius:6px!important;
-        color:#C39BD3!important;
-    }
-    [data-testid="collapsedControl"]{
-        background:#1a1a35!important;
-        border-right:1px solid #2a2a4a!important;
-        display:flex!important;
-        visibility:visible!important;
-        opacity:1!important;
-    }
-    [data-testid="collapsedControl"] button{
-        background:#6C3483!important;
-        color:white!important;
-        border-radius:0 8px 8px 0!important;
-        width:28px!important;
-        height:60px!important;
-    }
-    section[data-testid="stSidebar"]{
-        transition:all 0.3s ease!important;
-    }
-
-    .stButton>button{background:linear-gradient(135deg,#6C3483,#9B59B6)!important;color:white!important;
-        border:none!important;border-radius:8px!important;font-weight:600!important;padding:.5rem 1.2rem!important}
-    .stButton>button:hover{background:linear-gradient(135deg,#7D3C98,#AF7AC5)!important;
-        box-shadow:0 4px 15px rgba(108,52,131,0.4)!important}
-    div[data-testid="stDataFrame"]{border-radius:10px!important;overflow:hidden!important;border:1px solid #1e1e3a!important}
-    .stTextInput>div>div>input,.stSelectbox>div>div,.stDateInput>div>div>input{
-        background:#13132a!important;border:1px solid #2a2a4a!important;color:white!important;border-radius:8px!important}
-    .stFileUploader>div{background:#13132a!important;border:2px dashed #2a2a4a!important;border-radius:10px!important}
-    section[data-testid="stSidebar"] label,section[data-testid="stSidebar"] p{color:#aaa!important}
-    #MainMenu,footer{visibility:hidden}
-    header{visibility:visible!important;background:transparent!important;box-shadow:none!important}
-    header button[data-testid="stBaseButton-header"]{display:none!important}
-    header a{display:none!important}
-    ::-webkit-scrollbar{width:6px;height:6px}
-    ::-webkit-scrollbar-thumb{background:#2a2a4a;border-radius:3px}
-    ::-webkit-scrollbar-thumb:hover{background:#6C3483}
-    section[data-testid="stSidebar"] > div:first-child{
-        overflow-y:auto!important;
-        max-height:100vh!important;
-    }
-    </style>""", unsafe_allow_html=True)
-
-    # ── SIDEBAR ───────────────────────────────────────────────────────────────
-    with st.sidebar:
-        st.markdown("""<div style='text-align:center;padding:16px 0 8px 0'>
-            <div style='font-size:26px'>🛒</div>
-            <div style='font-size:17px;font-weight:800;color:#D7BDE2'>Flipkart Dashboard</div>
-            <div style='font-size:11px;color:#6666aa;letter-spacing:1px;text-transform:uppercase;margin-top:3px'>One Guardian</div>
-        </div>""", unsafe_allow_html=True)
-        st.markdown("---")
-        spreadsheet_name = st.text_input("Google Sheet Name", "Flipkart_Sales_DB")
-
-        st.markdown("### 📤 Upload Data")
-        uploaded = st.file_uploader("Earn More Report (.xlsx / .csv)", type=["xlsx","xls","csv"])
-        if uploaded:
-            try:
-                raw = pd.read_csv(uploaded) if uploaded.name.endswith(".csv") else pd.read_excel(uploaded)
-                missing = [c for c in REQUIRED_COLS if c not in raw.columns]
-                if missing: st.error(f"Missing: {missing}")
-                else:
-                    raw["Order Date"] = pd.to_datetime(raw["Order Date"],errors="coerce").dt.strftime("%Y-%m-%d")
-                    raw = clean_df(normalize_brands(add_channel(raw)))
-                    ch_counts = raw["Channel"].value_counts()
-                    st.success(f"✅ {len(raw):,} rows | {raw['Order Date'].min()} → {raw['Order Date'].max()}")
-                    st.info(f"🏪 National: {ch_counts.get('National',0):,} | 🛍️ Shopsy: {ch_counts.get('Shopsy',0):,}")
-                    if st.button("💾 Save to Google Sheets", type="primary"):
-                        with st.spinner("Saving..."):
-                            client = get_gsheet_client()
-                            added, dupes = save_data(client, raw, spreadsheet_name)
-                        st.success(f"✅ {added:,} new rows. {dupes:,} duplicates skipped.")
-                        st.cache_data.clear()
-            except Exception as e: st.error(f"Error: {e}")
-
-        if SKU_MODULE_OK:
-            render_sku_sidebar()
-        else:
-            st.error(f"SKU error: {getattr(__import__('builtins'), '_SKU_ERR', 'unknown')}")
-
-        st.markdown("---")
-        st.markdown("### 🔧 Database Tools")
-        if st.button("➕ Add Channel column to Sheet"):
-            with st.spinner("Updating..."):
-                try:
-                    client = get_gsheet_client()
-                    sh = get_or_create_sheet(client, spreadsheet_name)
-                    ws = sh.sheet1
-                    data = ws.get_all_records()
-                    if not data: st.warning("Sheet is empty.")
-                    else:
-                        df_m = pd.DataFrame(data)
-                        df_m["Channel"] = df_m["Vertical"].apply(
-                            lambda v: "Shopsy" if str(v).strip().lower().startswith("shopsy") else "National")
-                        df_m = df_m.fillna("").replace(["nan","NaT"],"")
-                        ws.clear()
-                        ws.update([df_m.columns.tolist()] + df_m.astype(str).values.tolist())
-                        ch = df_m["Channel"].value_counts()
-                        st.success(f"✅ {len(df_m):,} rows updated. National:{ch.get('National',0):,} Shopsy:{ch.get('Shopsy',0):,}")
-                        st.cache_data.clear()
-                except Exception as e: st.error(f"Error: {e}")
-
-        # ── LOAD DATA ─────────────────────────────────────────────────────────
-        df_all = load_data(spreadsheet_name)
-        if df_all.empty:
-            st.info("No data yet. Upload a file above.")
-            st.stop()
-
-        st.markdown("---")
-        st.markdown("### 🔍 Filters")
-
-        df_all["Order Date"] = pd.to_datetime(df_all["Order Date"])
-        min_date = df_all["Order Date"].min().date()
-        max_date = df_all["Order Date"].max().date()
-        date_range = st.date_input("📅 Date Range", value=(min_date, max_date),
-                                   min_value=min_date, max_value=max_date)
-        start_date = date_range[0] if isinstance(date_range,(list,tuple)) and len(date_range)==2 else min_date
-        end_date   = date_range[1] if isinstance(date_range,(list,tuple)) and len(date_range)==2 else max_date
-
-        channel_f = st.selectbox("📡 Channel", ["All","National","Shopsy"])
-        brands = ["All"] + sorted(df_all["Brand"].dropna().unique().tolist())
-        brand_f = st.selectbox("🏷️ Brand", brands)
-
-        if brand_f == "Bellavita":
-            bv_cats = df_all[df_all["Brand"]=="Bellavita"]["Category"].dropna().unique().tolist()
-            frag_cats   = [c for c in bv_cats if any(k in str(c).lower() for k in FRAG_KW)]
-            nonfrag_cats= [c for c in bv_cats if c not in frag_cats]
-            cat_f = st.selectbox("📦 Category", ["All","Fragrance","Non-Fragrance"])
-        else:
-            all_cats = ["All"] + sorted(df_all["Category"].dropna().unique().tolist())
-            cat_f = st.selectbox("📦 Category", all_cats)
-            frag_cats, nonfrag_cats = [], []
-
-        st.markdown("---")
-        st.markdown("### 📍 Jump To")
-        nav_items = [
-            ("📊 Overview","overview"),
-            ("📊 Vertical Analysis","vertical"),
-            ("🌸 Fragrance vs Non-Frag","fragrance"),
-            ("🏪 National Channel","national"),
-            ("🛍️ Shopsy Channel","shopsy"),
-            ("💧 GMV Leakage Waterfall","waterfall"),
-            ("❌ Cancellation Deep Dive","cancel_deep"),
-            ("↩️ Return Rate Deep Dive","return_deep"),
-            ("🏷️ Fulfillment Type Analysis","fulfillment"),
-            ("🆕 New SKU Tracker","new_skus"),
-            ("🏆 SKU Health Scorecard","sku_health"),
-            ("📈 Growing vs Declining SKUs","sku_trends"),
-            ("🗺️ Category Heatmap","cat_heatmap"),
-            ("📍 Location Analysis","location"),
-            ("🌱 Non-Frag Growth Tracker","nonfrag_tracker"),
-            ("📊 Brand Contribution Trend","brand_trend"),
-            ("📋 Weekly Brand Matrix","weekly_matrix"),
-            ("📅 DoD Analysis","dod"),
-            ("📆 WoW Analysis","wow"),
-            ("🗓️ MoM Analysis","mom"),
-            ("📉 Declining SKUs","declining"),
-            ("🎯 Action Points","actions"),
-        ]
-        excl_col = next((c for c in df_all.columns if "exclusive" in c.lower()), None)
-        if excl_col: nav_items.append(("⭐ Exclusives","exclusives"))
-        nav_html = ""
-        for label, anchor in nav_items:
-            nav_html += f"<a href='#{anchor}' style='display:block;padding:7px 12px;margin:3px 0;color:#C39BD3;text-decoration:none;font-size:13px;font-weight:500;border-radius:8px;background:rgba(108,52,131,0.08)'>{label}</a>"
-        st.markdown(nav_html, unsafe_allow_html=True)
+    st.markdown("### 🔍 Global Filters")
+    months_available = sorted(earn['Month'].unique())
+    sel_months = st.multiselect("📅 Months", months_available, default=months_available, 
+                                 format_func=lambda m: MONTH_LABELS.get(m, m))
     
-    # ── APPLY ALL FILTERS — THIS IS THE KEY FIX ───────────────────────────────
-    # Step 1: date filter on master data
-    df_all["Order Date"] = pd.to_datetime(df_all["Order Date"])
-    df_dated = df_all[(df_all["Order Date"].dt.date >= start_date) & (df_all["Order Date"].dt.date <= end_date)].copy()
+    brands_avail = ['All'] + sorted(earn['Brand'].unique().tolist())
+    sel_brand = st.selectbox("🏷️ Brand", brands_avail)
+    
+    channel_avail = ['All', 'National', 'Shopsy']
+    sel_channel = st.selectbox("📡 Channel", channel_avail)
 
-    # Step 2: full filtered df for ALL charts (channel + brand + category)
-    df = df_dated.copy()
-    if channel_f != "All": df = df[df["Channel"] == channel_f]
-    if brand_f != "All":   df = df[df["Brand"] == brand_f]
-    if cat_f != "All":
-        if brand_f == "Bellavita":
-            df = df[df["Category"].isin(frag_cats if cat_f=="Fragrance" else nonfrag_cats)]
-        else:
-            df = df[df["Category"] == cat_f]
+    cat_avail = ['All'] + sorted(earn['Category'].unique().tolist())
+    sel_cat = st.selectbox("📦 Category", cat_avail)
 
-    # Step 3: date-only df for channel-level and brand-level overview (not brand/cat filtered)
+    ftype_avail = ['All', 'Fragrance', 'Non-Fragrance']
+    sel_ftype = st.selectbox("🌸 Type", ftype_avail)
 
-    dates = sorted(df["Order Date"].unique())
-    has_wow = df["Order Date"].dt.to_period("W").nunique() >= 2
-    has_mom = df["Order Date"].dt.to_period("M").nunique() >= 2
+    st.markdown("<hr style='border-color:#1e1e40'>", unsafe_allow_html=True)
+    st.markdown("### 📍 Navigate")
+    sections = [
+        ("🏢 Executive Overview", "exec"),
+        ("📊 Brand Intelligence", "brand"),
+        ("📦 Category Analysis", "category"),
+        ("🌸 Frag vs Non-Frag", "frag"),
+        ("🔍 Search Analytics", "search"),
+        ("🏭 Fulfillment (FBF)", "fbf"),
+        ("❌ Returns & Cancels", "rnc"),
+        ("🏆 SKU Intelligence", "sku"),
+        ("📈 Growth Diagnostics", "growth"),
+        ("⭐ Exclusives & Range", "excl"),
+        ("🎯 Action Recommendations", "actions"),
+    ]
+    for label, _ in sections:
+        st.markdown(f"<a href='#{_}' style='display:block;padding:6px 12px;margin:2px 0;color:#C39BD3;text-decoration:none;font-size:12px;font-weight:500;border-radius:6px;background:rgba(108,52,131,0.08)'>{label}</a>", unsafe_allow_html=True)
 
-    # ── HEADER ────────────────────────────────────────────────────────────────
-    ch_counts = df_dated["Channel"].value_counts()
-    date_str = f"{dates[0].strftime('%d %b %Y')} → {dates[-1].strftime('%d %b %Y')}" if dates else "—"
+# ─────────────────────────────────────────────
+# APPLY FILTERS
+# ─────────────────────────────────────────────
+df = earn.copy()
+if sel_months: df = df[df['Month'].isin(sel_months)]
+if sel_brand != 'All': df = df[df['Brand'] == sel_brand]
+if sel_channel != 'All': df = df[df['Channel'] == sel_channel]
+if sel_cat != 'All': df = df[df['Category'] == sel_cat]
+if sel_ftype != 'All': df = df[df['Type'] == sel_ftype]
+
+df_search_f = search.copy()
+if sel_months: df_search_f = df_search_f[df_search_f['Month'].isin(sel_months)]
+if sel_brand != 'All': df_search_f = df_search_f[df_search_f['Brand'] == sel_brand]
+
+# ─────────────────────────────────────────────
+# HELPER FUNCTIONS
+# ─────────────────────────────────────────────
+def metric_card(label, value, delta=None, prefix="₹", suffix="", color="#6C3483"):
+    fmt_val = indian_fmt(value) if prefix == "₹" else f"{value:.1f}" if isinstance(value, float) else str(value)
+    delta_html = f"<div class='metric-delta'>{delta}</div>" if delta else ""
     st.markdown(f"""
-    <div style='background:linear-gradient(135deg,#1a0a2e,#0d1a3a,#0a1a20);border-radius:16px;
-                padding:28px 32px;margin-bottom:24px;border:1px solid #2a2a4a;box-shadow:0 8px 32px rgba(0,0,0,0.4)'>
-        <div style='display:flex;align-items:center;gap:12px;margin-bottom:8px'>
-            <span style='font-size:32px'>🛒</span>
-            <div>
-                <div style='font-size:26px;font-weight:800;color:#fff;letter-spacing:-0.5px'>Flipkart Sales Dashboard</div>
-                <div style='font-size:13px;color:#8888bb;margin-top:2px'>One Guardian · {brand_f} · {channel_f} · {cat_f}</div>
-            </div>
-        </div>
-        <div style='display:flex;gap:12px;flex-wrap:wrap;margin-top:14px'>
-            <div style='background:rgba(108,52,131,0.2);border:1px solid rgba(108,52,131,0.4);border-radius:8px;padding:5px 12px;font-size:12px;color:#D7BDE2;font-weight:600'>📅 {date_str}</div>
-            <div style='background:rgba(46,134,193,0.2);border:1px solid rgba(46,134,193,0.4);border-radius:8px;padding:5px 12px;font-size:12px;color:#85C1E9;font-weight:600'>🏪 National: {ch_counts.get("National",0):,}</div>
-            <div style='background:rgba(230,126,34,0.2);border:1px solid rgba(230,126,34,0.4);border-radius:8px;padding:5px 12px;font-size:12px;color:#F0B27A;font-weight:600'>🛍️ Shopsy: {ch_counts.get("Shopsy",0):,}</div>
-            <div style='background:rgba(46,204,113,0.15);border:1px solid rgba(46,204,113,0.3);border-radius:8px;padding:5px 12px;font-size:12px;color:#82E0AA;font-weight:600'>📊 {len(df):,} rows filtered</div>
-        </div>
+    <div class="metric-card" style="border-left-color:{color}">
+        <div class="metric-label">{label}</div>
+        <div class="metric-value">{prefix}{fmt_val}{suffix}</div>
+        {delta_html}
     </div>""", unsafe_allow_html=True)
 
-    # ════════════════════════════════════════════════════════════════════
-    # 1. OVERVIEW — uses df (fully filtered)
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown("<div id='overview'></div>", unsafe_allow_html=True)
-    sec_hdr("📊 Overview","overview")
+def section_header(title, anchor, emoji=""):
+    st.markdown(f"<div id='{anchor}'></div>", unsafe_allow_html=True)
+    st.markdown(f"""<div class='section-header'>
+        <div class='section-title'>{emoji} {title}</div>
+    </div>""", unsafe_allow_html=True)
 
-    if dates:
-        td=df[df["Order Date"]==dates[-1]]
-        yd=df[df["Order Date"]==dates[-2]] if len(dates)>=2 else pd.DataFrame()
-        ts,tc,tr=td["Final Sale Amount"].sum(),td["Cancellation Amount"].sum(),td["Return Amount"].sum()
-        ys=yd["Final Sale Amount"].sum() if not yd.empty else 0
-        yc=yd["Cancellation Amount"].sum() if not yd.empty else 0
-        yr=yd["Return Amount"].sum() if not yd.empty else 0
-        cr=tc/(ts+tc)*100 if (ts+tc)>0 else 0
-        c1,c2,c3,c4,c5=st.columns(5)
-        with c1: metric_card("Today's Final Sale",ts,pct_badge(safe_pct(ts,ys)))
-        with c2: metric_card("Today's Cancellation",tc,pct_badge(safe_pct(tc,yc),inverse=True))
-        with c3: metric_card("Today's Returns",tr,pct_badge(safe_pct(tr,yr),inverse=True))
-        with c4: metric_card("Cancel Rate",cr,prefix="",suffix="%")
-        current_month = pd.Timestamp.now().to_period("M")
-        df_cm = df[pd.to_datetime(df["Order Date"]).dt.to_period("M") == current_month]
-        with c5: metric_card("Current Month Sale", df_cm["Final Sale Amount"].sum())
-
-    # Channel split — uses df (fully filtered)
-    st.markdown("<div style='background:linear-gradient(90deg,rgba(46,134,193,0.12),rgba(230,126,34,0.12));border:1px solid #2a2a4a;border-radius:12px;padding:11px 18px;margin:20px 0 8px 0'><span style='font-size:15px;font-weight:700;color:#D7BDE2'>📡 National vs Shopsy — Total Period</span></div>", unsafe_allow_html=True)
-    ch_grp = df.groupby("Channel").agg(Final_Sale=("Final Sale Amount","sum"),
-        Cancellation=("Cancellation Amount","sum"), Returns=("Return Amount","sum"),
-        Units=("Final Sale Units","sum")).reset_index()
-    ch_grp["Cancel Rate %"]=(ch_grp["Cancellation"]/(ch_grp["Final_Sale"]+ch_grp["Cancellation"]).replace(0,np.nan)*100).round(1)
-    ca,cb=st.columns(2)
-    with ca:
-        fig_ch = px.bar(ch_grp,x="Channel",y=["Final_Sale","Cancellation","Returns"],
-            barmode="group",template="plotly_dark",title="National vs Shopsy: Sale, Cancel, Returns",
-            color_discrete_map={"Final_Sale":"#6C3483","Cancellation":"#e74c3c","Returns":"#e67e22"},
-            labels={"value":"₹","variable":"Metric"})
-        max_v = ch_grp[["Final_Sale","Cancellation","Returns"]].max().max() if not ch_grp.empty else 1
-        
-        fig_ch.update_yaxes(tickvals=[v for v in __import__("numpy").linspace(0,max_v,6)],
-                            ticktext=["₹"+indian_fmt(v) for v in __import__("numpy").linspace(0,max_v,6)])
-        fig_ch.update_traces(hovertemplate="<b>%{x}</b><br>₹%{y:,.0f}<extra></extra>")
-        st.plotly_chart(fig_ch, use_container_width=True)
-    with cb:
-        st.plotly_chart(px.pie(ch_grp,values="Final_Sale",names="Channel",
-            title="Sale Share: National vs Shopsy",template="plotly_dark",
-            color_discrete_map={"National":"#2E86C1","Shopsy":"#E67E22"}), use_container_width=True)
-    render_table(ch_grp.rename(columns={"Final_Sale":"Final Sale (₹)","Cancellation":"Cancel (₹)","Returns":"Returns (₹)","Units":"Units Sold"}),
-                 {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Returns (₹)":"₹{:,.0f}","Units Sold":"{:,.0f}","Cancel Rate %":"{:.1f}%"})
-
-    # Brand-wise — uses df (fully filtered)
-    st.markdown("<div style='background:rgba(108,52,131,0.12);border:1px solid #2a2a4a;border-radius:12px;padding:11px 18px;margin:20px 0 8px 0'><span style='font-size:15px;font-weight:700;color:#D7BDE2'>🏷️ Brand-wise Performance</span></div>", unsafe_allow_html=True)
-    bg=df.groupby(["Brand","Channel"]).agg(Final_Sale=("Final Sale Amount","sum")).reset_index()
-    bg["Final_Sale_Fmt"] = bg["Final_Sale"].apply(indian_fmt)
-    fig_bg = px.bar(bg, x="Brand", y="Final_Sale", color="Channel", barmode="group",
-        template="plotly_dark", title="Brand-wise Final Sale by Channel",
-        color_discrete_map=CHANNEL_COLORS,
-        labels={"Final_Sale":"Final Sale (₹)"},
-        custom_data=["Final_Sale_Fmt","Channel"])
-    fig_bg.update_traces(hovertemplate="<b>%{customdata[1]}</b><br>₹%{customdata[0]}<extra></extra>")
-    max_val = bg["Final_Sale"].max() if not bg.empty else 1
-    ticks = [max_val * i / 5 for i in range(6)]
-    fig_bg.update_yaxes(tickvals=ticks, ticktext=["₹"+indian_fmt(v) for v in ticks])
-    st.plotly_chart(fig_bg, use_container_width=True)
-    bg2=df.groupby("Brand").agg(Final_Sale=("Final Sale Amount","sum"),Cancellation=("Cancellation Amount","sum"),
-        Returns=("Return Amount","sum"),Units=("Final Sale Units","sum")).reset_index().sort_values("Final_Sale",ascending=False)
-    bg2["Cancel Rate %"]=(bg2["Cancellation"]/(bg2["Final_Sale"]+bg2["Cancellation"]).replace(0,np.nan)*100).round(1)
-    render_table(bg2.rename(columns={"Final_Sale":"Final Sale (₹)","Cancellation":"Cancel (₹)","Returns":"Returns (₹)","Units":"Units Sold"}),
-                 {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Returns (₹)":"₹{:,.0f}","Units Sold":"{:,.0f}","Cancel Rate %":"{:.1f}%"})
-
-    # Daily trend — uses df (fully filtered)
-    st.markdown("<div style='background:rgba(46,204,113,0.08);border:1px solid #2a2a4a;border-radius:12px;padding:11px 18px;margin:20px 0 8px 0'><span style='font-size:15px;font-weight:700;color:#D7BDE2'>📈 Daily Trend</span></div>", unsafe_allow_html=True)
-    st.plotly_chart(combined_chart(daily_agg(df),"Order Date","Daily: Final Sale (Bar) | Cancel & Returns (Line)"), use_container_width=True)
-    dt_ch = df.copy(); dt_ch["Order Date"]=pd.to_datetime(dt_ch["Order Date"])
-    dt_ch = dt_ch.groupby(["Order Date","Channel"]).agg(Final_Sale=("Final Sale Amount","sum")).reset_index()
-    fig_daily_ch = px.area(dt_ch,x="Order Date",y="Final_Sale",color="Channel",
-        title="Daily Final Sale: National vs Shopsy",template="plotly_dark",
-        color_discrete_map={"National":"#2E86C1","Shopsy":"#E67E22"},
-        labels={"Final_Sale":"Final Sale (₹)","Order Date":"Date"},
-        line_group="Channel")
-    fig_daily_ch.update_traces(opacity=0.7)
-    max_v2 = dt_ch["Final_Sale"].max() if not dt_ch.empty else 1
-    ticks2 = [max_v2*i/5 for i in range(6)]
-    fig_daily_ch.update_yaxes(tickvals=ticks2, ticktext=["₹"+indian_fmt(v) for v in ticks2])
-    st.plotly_chart(fig_daily_ch, use_container_width=True)
-
-    # ════════════════════════════════════════════════════════════════════
-    # 2. CHANNEL SECTIONS — uses df (fully filtered)
-    # ════════════════════════════════════════════════════════════════════
-    render_channel_section(df, "National", "national")
-    render_channel_section(df, "Shopsy", "shopsy")
-
-    # ════════════════════════════════════════════════════════════════════
-    # 2.5 VERTICAL ANALYSIS — Overall + DoD + WoW + MoM
-    # ════════════════════════════════════════════════════════════════════
-    sec_hdr("📊 Vertical Analysis","vertical")
-
-    vert_grp = df.groupby("Vertical").agg(
-        Final_Sale=("Final Sale Amount","sum"),
-        Cancellation=("Cancellation Amount","sum"),
-        Returns=("Return Amount","sum"),
-        Units=("Final Sale Units","sum")
-    ).reset_index().sort_values("Final_Sale", ascending=False).head(15)
-    vert_grp["Cancel Rate %"] = (vert_grp["Cancellation"]/(vert_grp["Final_Sale"]+vert_grp["Cancellation"]).replace(0,np.nan)*100).round(1)
-
-    va, vb = st.columns(2)
-    with va:
-        fig_vert = px.bar(vert_grp, x="Vertical", y="Final_Sale", template="plotly_dark",
-            title="Top Verticals by Final Sale", color="Vertical",
-            color_discrete_sequence=PIE_COLORS,
-            labels={"Final_Sale":"Final Sale (₹)"})
-        max_vv = vert_grp["Final_Sale"].max() if not vert_grp.empty else 1
-        ticks_vv = [max_vv*i/5 for i in range(6)]
-        fig_vert.update_yaxes(tickvals=ticks_vv, ticktext=["₹"+indian_fmt(v) for v in ticks_vv])
-        fig_vert.update_xaxes(tickangle=45)
-        fig_vert.update_layout(showlegend=False)
-        st.plotly_chart(fig_vert, use_container_width=True)
-    with vb:
-        st.plotly_chart(px.pie(vert_grp, values="Final_Sale", names="Vertical",
-            title="Vertical Sale Share", template="plotly_dark",
-            color_discrete_sequence=PIE_COLORS,
-            hole=0.35), use_container_width=True)
-
-    render_table(vert_grp.rename(columns={"Final_Sale":"Final Sale (₹)","Cancellation":"Cancel (₹)","Returns":"Returns (₹)","Units":"Units Sold"}),
-        {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Returns (₹)":"₹{:,.0f}","Units Sold":"{:,.0f}","Cancel Rate %":"{:.1f}%"})
-
-    # ── Vertical DoD ──────────────────────────────────────────────────
-    with st.expander("📅 Vertical DoD — Which verticals grew or dropped yesterday?"):
-        vert_dod = df.copy()
-        vert_dod["Order Date"] = pd.to_datetime(vert_dod["Order Date"])
-        vdates = sorted(vert_dod["Order Date"].unique())
-        if len(vdates) >= 2:
-            vt = vert_dod[vert_dod["Order Date"]==vdates[-1]].groupby("Vertical")["Final Sale Amount"].sum()
-            vy = vert_dod[vert_dod["Order Date"]==vdates[-2]].groupby("Vertical")["Final Sale Amount"].sum()
-            vdod = pd.DataFrame({"Today":vt, "Yesterday":vy}).fillna(0)
-            vdod["DoD %"] = ((vdod["Today"]-vdod["Yesterday"])/vdod["Yesterday"].replace(0,np.nan)*100).round(1)
-            vdod["Trend"] = vdod["DoD %"].apply(lambda x: "🟢 Growing" if x > 5 else ("🔴 Declining" if x < -5 else "🟡 Stable"))
-            vdod = vdod.sort_values("Today", ascending=False).reset_index()
-            render_table(vdod, {"Today":"₹{:,.0f}","Yesterday":"₹{:,.0f}","DoD %":"{:.1f}%"}, pct_cols=["DoD %"])
-
-            # bar chart for DoD
-            vdod_pos = vdod.copy()
-            fig_vdod = px.bar(vdod_pos, x="Vertical", y="DoD %", color="DoD %",
-                color_continuous_scale=["#e74c3c","#f39c12","#2ecc71"],
-                template="plotly_dark", title="Vertical DoD % Change",
-                labels={"DoD %":"DoD Change %"})
-            fig_vdod.update_xaxes(tickangle=45)
-            fig_vdod.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.4)
-            st.plotly_chart(fig_vdod, use_container_width=True)
-        else:
-            st.info("Need at least 2 days of data for DoD.")
-
-    # ── Vertical WoW ──────────────────────────────────────────────────
-    with st.expander("📆 Vertical WoW — Week-on-week performance by vertical"):
-        vert_wow = df.copy()
-        vert_wow["Order Date"] = pd.to_datetime(vert_wow["Order Date"])
-        vert_wow["Week"] = vert_wow["Order Date"].dt.to_period("W").apply(lambda r: r.start_time)
-        vweeks = sorted(vert_wow["Week"].unique())
-        if len(vweeks) >= 2:
-            vw1 = vert_wow[vert_wow["Week"]==vweeks[-1]].groupby("Vertical")["Final Sale Amount"].sum()
-            vw2 = vert_wow[vert_wow["Week"]==vweeks[-2]].groupby("Vertical")["Final Sale Amount"].sum()
-            vwow = pd.DataFrame({"This Week":vw1, "Last Week":vw2}).fillna(0)
-            vwow["WoW %"] = ((vwow["This Week"]-vwow["Last Week"])/vwow["Last Week"].replace(0,np.nan)*100).round(1)
-            vwow["Trend"] = vwow["WoW %"].apply(lambda x: "🟢 Growing" if x > 5 else ("🔴 Declining" if x < -5 else "🟡 Stable"))
-            vwow = vwow.sort_values("This Week", ascending=False).reset_index()
-            render_table(vwow, {"This Week":"₹{:,.0f}","Last Week":"₹{:,.0f}","WoW %":"{:.1f}%"}, pct_cols=["WoW %"])
-
-            fig_vwow = px.bar(vwow, x="Vertical", y="WoW %", color="WoW %",
-                color_continuous_scale=["#e74c3c","#f39c12","#2ecc71"],
-                template="plotly_dark", title="Vertical WoW % Change")
-            fig_vwow.update_xaxes(tickangle=45)
-            fig_vwow.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.4)
-            st.plotly_chart(fig_vwow, use_container_width=True)
-
-            # Grouped bar: This Week vs Last Week side by side
-            vwow_melt = vwow[["Vertical","This Week","Last Week"]].melt(id_vars="Vertical", var_name="Period", value_name="Sale")
-            fig_vwow2 = px.bar(vwow_melt, x="Vertical", y="Sale", color="Period", barmode="group",
-                template="plotly_dark", title="Vertical: This Week vs Last Week",
-                color_discrete_map={"This Week":"#9B59B6","Last Week":"#3498DB"})
-            max_vw = vwow_melt["Sale"].max() if not vwow_melt.empty else 1
-            ticks_vw = [max_vw*i/5 for i in range(6)]
-            fig_vwow2.update_yaxes(tickvals=ticks_vw, ticktext=["₹"+indian_fmt(v) for v in ticks_vw])
-            fig_vwow2.update_xaxes(tickangle=45)
-            st.plotly_chart(fig_vwow2, use_container_width=True)
-        else:
-            st.info("Need at least 2 weeks of data for WoW.")
-
-    # ── Vertical MoM ──────────────────────────────────────────────────
-    with st.expander("🗓️ Vertical MoM — Month-on-month performance by vertical"):
-        vert_mom = df.copy()
-        vert_mom["Order Date"] = pd.to_datetime(vert_mom["Order Date"])
-        vert_mom["Month"] = vert_mom["Order Date"].dt.to_period("M").apply(lambda r: r.start_time)
-        vmonths = sorted(vert_mom["Month"].unique())
-        if len(vmonths) >= 2:
-            vm1 = vert_mom[vert_mom["Month"]==vmonths[-1]].groupby("Vertical")["Final Sale Amount"].sum()
-            vm2 = vert_mom[vert_mom["Month"]==vmonths[-2]].groupby("Vertical")["Final Sale Amount"].sum()
-            vmom = pd.DataFrame({"This Month":vm1, "Last Month":vm2}).fillna(0)
-            vmom["MoM %"] = ((vmom["This Month"]-vmom["Last Month"])/vmom["Last Month"].replace(0,np.nan)*100).round(1)
-            vmom["Trend"] = vmom["MoM %"].apply(lambda x: "🟢 Growing" if x > 5 else ("🔴 Declining" if x < -5 else "🟡 Stable"))
-            vmom = vmom.sort_values("This Month", ascending=False).reset_index()
-            render_table(vmom, {"This Month":"₹{:,.0f}","Last Month":"₹{:,.0f}","MoM %":"{:.1f}%"}, pct_cols=["MoM %"])
-
-            fig_vmom = px.bar(vmom, x="Vertical", y="MoM %", color="MoM %",
-                color_continuous_scale=["#e74c3c","#f39c12","#2ecc71"],
-                template="plotly_dark", title="Vertical MoM % Change")
-            fig_vmom.update_xaxes(tickangle=45)
-            fig_vmom.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.4)
-            st.plotly_chart(fig_vmom, use_container_width=True)
-
-            vmom_melt = vmom[["Vertical","This Month","Last Month"]].melt(id_vars="Vertical", var_name="Period", value_name="Sale")
-            fig_vmom2 = px.bar(vmom_melt, x="Vertical", y="Sale", color="Period", barmode="group",
-                template="plotly_dark", title="Vertical: This Month vs Last Month",
-                color_discrete_map={"This Month":"#9B59B6","Last Month":"#3498DB"})
-            max_vm = vmom_melt["Sale"].max() if not vmom_melt.empty else 1
-            ticks_vm = [max_vm*i/5 for i in range(6)]
-            fig_vmom2.update_yaxes(tickvals=ticks_vm, ticktext=["₹"+indian_fmt(v) for v in ticks_vm])
-            fig_vmom2.update_xaxes(tickangle=45)
-            st.plotly_chart(fig_vmom2, use_container_width=True)
-        else:
-            st.info("Need at least 2 months of data for MoM.")
-    # ════════════════════════════════════════════════════════════════════
-    # ════════════════════════════════════════════════════════════════════
-    # 3. FRAGRANCE vs NON-FRAGRANCE — Always visible, key growth tracker
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown("<div id='fragrance'></div>", unsafe_allow_html=True)
-    sec_hdr("🌸 Fragrance vs Non-Fragrance Analysis","fragrance")
-
-    frag_df = df.copy()
-    frag_df["Order Date"] = pd.to_datetime(frag_df["Order Date"])
-    frag_df["Type"] = frag_df["Category"].apply(
-        lambda c: "Fragrance" if any(k in str(c).lower() for k in FRAG_KW) else "Non-Fragrance"
+def dark_fig(fig, height=380):
+    fig.update_layout(
+        template="plotly_dark", height=height,
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(15,15,35,0.6)',
+        font=dict(family='Inter', color='#c0c0e0', size=12),
+        margin=dict(l=10, r=10, t=40, b=10),
+        legend=dict(bgcolor='rgba(0,0,0,0)', font=dict(size=11))
     )
+    fig.update_xaxes(gridcolor='rgba(255,255,255,0.05)', showgrid=True)
+    fig.update_yaxes(gridcolor='rgba(255,255,255,0.05)', showgrid=True)
+    return fig
 
-    tg = frag_df.groupby("Type").agg(
-        Final_Sale=("Final Sale Amount","sum"),
-        Cancellation=("Cancellation Amount","sum"),
-        Returns=("Return Amount","sum"),
-        Units=("Final Sale Units","sum")
+def ind_axis(fig, col_data, axis='y'):
+    max_v = col_data.max() if hasattr(col_data,'max') else col_data
+    if max_v > 0:
+        ticks = [max_v * i / 5 for i in range(6)]
+        labels = [indian_fmt(v) for v in ticks]
+        if axis == 'y': fig.update_yaxes(tickvals=ticks, ticktext=labels)
+        else: fig.update_xaxes(tickvals=ticks, ticktext=labels)
+    return fig
+
+def compute_mom_growth(df_in, brand=None):
+    d = df_in.copy()
+    if brand: d = d[d['Brand'] == brand]
+    by_month = d.groupby('Month')['Final Sale Amount'].sum().reindex(MONTH_ORDER, fill_value=0)
+    last_two = by_month.dropna()
+    if len(last_two) >= 2:
+        latest = last_two.iloc[-1]; prev = last_two.iloc[-2]
+        if prev > 0: return (latest - prev) / prev * 100
+    return None
+
+def compute_mtd_extrapolation(df_in, brand=None):
+    d = df_in.copy()
+    if brand: d = d[d['Brand'] == brand]
+    may = d[d['Month'] == '2026-05']
+    apr = d[d['Month'] == '2026-04']
+    days_so_far = may['Order Date'].nunique()
+    mtd_rev = may['Final Sale Amount'].sum()
+    daily_rate = mtd_rev / days_so_far if days_so_far > 0 else 0
+    projected = daily_rate * 31
+    apr_rev = apr['Final Sale Amount'].sum()
+    proj_growth = (projected - apr_rev) / apr_rev * 100 if apr_rev > 0 else None
+    return mtd_rev, daily_rate, projected, apr_rev, proj_growth
+
+# ═══════════════════════════════════════════════════════════════
+# HEADER BANNER
+# ═══════════════════════════════════════════════════════════════
+total_rev = df['Final Sale Amount'].sum()
+total_units = df['Final Sale Units'].sum()
+total_nsv = df['NSV'].sum()
+total_gmv = df['GMV'].sum()
+total_cancel = df['Cancellation Amount'].sum()
+total_returns = df['Return Amount'].sum()
+leakage = (total_cancel + total_returns) / total_gmv * 100 if total_gmv > 0 else 0
+cancel_rate = total_cancel / (total_rev + total_cancel) * 100 if (total_rev + total_cancel) > 0 else 0
+return_rate = total_returns / (total_rev + total_returns) * 100 if (total_rev + total_returns) > 0 else 0
+nsv_margin = total_nsv / total_rev * 100 if total_rev > 0 else 0
+fbf_rev = df[df['Fulfillment Type'] == 'FBF']['Final Sale Amount'].sum()
+fbf_pct = fbf_rev / total_rev * 100 if total_rev > 0 else 0
+shopsy_rev = df[df['Channel'] == 'Shopsy']['Final Sale Amount'].sum()
+
+active_filters = []
+if sel_brand != 'All': active_filters.append(f"Brand: {sel_brand}")
+if sel_channel != 'All': active_filters.append(f"Channel: {sel_channel}")
+if sel_cat != 'All': active_filters.append(f"Category: {sel_cat}")
+if sel_ftype != 'All': active_filters.append(f"Type: {sel_ftype}")
+filter_str = " · ".join(active_filters) if active_filters else "All Data"
+months_str = " | ".join([MONTH_LABELS.get(m,m) for m in (sel_months or [])])
+
+st.markdown(f"""
+<div style='background:linear-gradient(135deg,#0f051e,#0a1535,#051520);border-radius:16px;
+            padding:28px 32px;margin-bottom:28px;border:1px solid #1e1e40;box-shadow:0 8px 32px rgba(0,0,0,0.5)'>
+    <div style='display:flex;align-items:center;gap:14px;margin-bottom:12px'>
+        <span style='font-size:36px'>🛒</span>
+        <div>
+            <div style='font-size:26px;font-weight:900;color:#fff;letter-spacing:-0.5px'>Flipkart Business Intelligence Dashboard</div>
+            <div style='font-size:12px;color:#6666bb;margin-top:3px;font-weight:500'>Enterprise Command Center · One Guardian</div>
+        </div>
+    </div>
+    <div style='display:flex;gap:10px;flex-wrap:wrap;margin-top:12px'>
+        <div style='background:rgba(108,52,131,0.2);border:1px solid rgba(108,52,131,0.4);border-radius:7px;padding:4px 12px;font-size:11px;color:#C39BD3;font-weight:600'>📅 {months_str}</div>
+        <div style='background:rgba(52,152,219,0.2);border:1px solid rgba(52,152,219,0.4);border-radius:7px;padding:4px 12px;font-size:11px;color:#85C1E9;font-weight:600'>🎯 {filter_str}</div>
+        <div style='background:rgba(46,204,113,0.15);border:1px solid rgba(46,204,113,0.3);border-radius:7px;padding:4px 12px;font-size:11px;color:#82E0AA;font-weight:600'>📊 {len(df):,} rows</div>
+        <div style='background:rgba(243,156,18,0.15);border:1px solid rgba(243,156,18,0.3);border-radius:7px;padding:4px 12px;font-size:11px;color:#FAD7A0;font-weight:600'>🏭 FBF {fbf_pct:.1f}%</div>
+    </div>
+</div>""", unsafe_allow_html=True)
+
+# ═══════════════════════════════════════════════════════════════
+# SECTION 1: EXECUTIVE OVERVIEW
+# ═══════════════════════════════════════════════════════════════
+section_header("Executive Overview — Command Center", "exec", "🏢")
+
+# Top KPI Row
+c1,c2,c3,c4,c5,c6 = st.columns(6)
+with c1: metric_card("Total Revenue", total_rev, color="#9B59B6")
+with c2: metric_card("Total Units", total_units, prefix="", color="#3498DB")
+with c3: metric_card("Net Sales Value", total_nsv, color="#2ECC71")
+with c4: metric_card("Gross GMV", total_gmv, color="#F39C12")
+with c5: metric_card("Revenue Leakage", leakage, prefix="", suffix="%", color="#E74C3C")
+with c6: metric_card("FBF Revenue", fbf_rev, color="#1ABC9C")
+
+# MTD + Extrapolation
+st.markdown("<br>", unsafe_allow_html=True)
+mtd, dr, proj, apr_r, proj_g = compute_mtd_extrapolation(df)
+ca,cb,cc,cd,ce = st.columns(5)
+with ca: metric_card("May MTD Revenue", mtd, color="#9B59B6")
+with cb: metric_card("Daily Run Rate", dr, color="#3498DB")
+with cc: metric_card("Projected May", proj, color="#2ECC71")
+with cd: metric_card("Apr Full Month", apr_r, color="#F39C12")
+with ce: metric_card("Proj. vs Apr Growth", round(proj_g or 0,1), prefix="", suffix="%", color="#E74C3C" if (proj_g or 0)<0 else "#2ECC71")
+
+# Monthly Revenue Trend
+st.markdown("<br>", unsafe_allow_html=True)
+col_l, col_r = st.columns([2,1])
+with col_l:
+    month_df = df.groupby('Month').agg(
+        Revenue=('Final Sale Amount','sum'),
+        Units=('Final Sale Units','sum'),
+        NSV=('NSV','sum'),
+        GMV=('GMV','sum'),
+        Cancel=('Cancellation Amount','sum'),
+        Returns=('Return Amount','sum')
     ).reset_index()
-    tg["Cancel Rate %"] = (tg["Cancellation"]/(tg["Final_Sale"]+tg["Cancellation"]).replace(0,np.nan)*100).round(1)
-    total_frag_sale = tg["Final_Sale"].sum()
-    tg["Share %"] = (tg["Final_Sale"]/total_frag_sale*100).round(1) if total_frag_sale > 0 else 0
+    month_df = month_df[month_df['Month'].isin(MONTH_ORDER)]
+    month_df['Month_Label'] = month_df['Month'].map(MONTH_LABELS)
+    month_df['MoM_Growth'] = month_df['Revenue'].pct_change() * 100
+    month_df['Cancel_Rate'] = (month_df['Cancel'] / (month_df['Revenue'] + month_df['Cancel'])).fillna(0) * 100
 
-    # Summary KPI cards
-    f_row = tg[tg["Type"]=="Fragrance"].iloc[0] if "Fragrance" in tg["Type"].values else None
-    nf_row = tg[tg["Type"]=="Non-Fragrance"].iloc[0] if "Non-Fragrance" in tg["Type"].values else None
-    k1, k2, k3, k4 = st.columns(4)
-    with k1: metric_card("Fragrance Sale", f_row["Final_Sale"] if f_row is not None else 0)
-    with k2: metric_card("Non-Frag Sale", nf_row["Final_Sale"] if nf_row is not None else 0)
-    with k3: metric_card("Fragrance Share", f_row["Share %"] if f_row is not None else 0, prefix="", suffix="%")
-    with k4: metric_card("Non-Frag Share", nf_row["Share %"] if nf_row is not None else 0, prefix="", suffix="%")
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(go.Bar(x=month_df['Month_Label'], y=month_df['Revenue'], name="Revenue",
+                         marker_color="#9B59B6", opacity=0.9,
+                         text=[indian_fmt(v) for v in month_df['Revenue']],
+                         textposition='inside', textfont=dict(color='white', size=10)), secondary_y=False)
+    fig.add_trace(go.Scatter(x=month_df['Month_Label'], y=month_df['Cancel_Rate'],
+                             name="Cancel Rate %", line=dict(color="#E74C3C", width=2.5),
+                             mode='lines+markers+text',
+                             text=[f"{v:.1f}%" for v in month_df['Cancel_Rate']],
+                             textposition='top center', textfont=dict(size=10, color='#E74C3C')), secondary_y=True)
+    fig.update_layout(title="📅 Monthly Revenue & Cancellation Rate", template="plotly_dark",
+                      height=380, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(15,15,35,0.6)',
+                      font=dict(color='#c0c0e0'), margin=dict(l=10,r=10,t=40,b=10),
+                      legend=dict(orientation='h', y=1.12))
+    fig.update_yaxes(title_text="Revenue (₹)", secondary_y=False)
+    fig.update_yaxes(title_text="Cancel Rate %", secondary_y=True, range=[0, max(month_df['Cancel_Rate'].max()*2, 10)])
+    ind_axis(fig, month_df['Revenue'])
+    st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("""<div style='background:rgba(46,204,113,0.1);border:1px solid rgba(46,204,113,0.3);
-        border-radius:10px;padding:10px 16px;margin:10px 0'>
-        <span style='color:#2ecc71;font-weight:700'>🎯 Growth Focus:</span>
-        <span style='color:#aaa;font-size:13px'> Non-Fragrance is the next growth lever — 
-        track its share weekly and push category expansion via exclusives, new SKUs, and targeted ads.</span>
-    </div>""", unsafe_allow_html=True)
+with col_r:
+    # Brand pie
+    brand_pie = df.groupby('Brand')['Final Sale Amount'].sum().reset_index().sort_values('Final Sale Amount', ascending=False)
+    fig_pie = px.pie(brand_pie, values='Final Sale Amount', names='Brand',
+                     title="Revenue by Brand", color='Brand',
+                     color_discrete_map=BRAND_COLORS, hole=0.45)
+    dark_fig(fig_pie, 380)
+    fig_pie.update_traces(textposition='inside', textinfo='percent+label', textfont_size=10)
+    st.plotly_chart(fig_pie, use_container_width=True)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        fig_tg = px.bar(tg, x="Type", y=["Final_Sale","Cancellation","Returns"], barmode="group",
-            template="plotly_dark", title="Fragrance vs Non-Frag: Sale, Cancel, Returns",
-            color_discrete_map={"Final_Sale":"#C39BD3","Cancellation":"#e74c3c","Returns":"#e67e22"},
-            labels={"value":"₹","variable":"Metric"})
-        max_tg = tg[["Final_Sale","Cancellation","Returns"]].max().max() if not tg.empty else 1
-        ticks_tg = [max_tg*i/5 for i in range(6)]
-        fig_tg.update_yaxes(tickvals=ticks_tg, ticktext=["₹"+indian_fmt(v) for v in ticks_tg])
-        st.plotly_chart(fig_tg, use_container_width=True)
-    with c2:
-        st.plotly_chart(px.pie(tg, values="Final_Sale", names="Type",
-            title="Sale Share: Frag vs Non-Frag", template="plotly_dark",
-            color_discrete_map=FRAG_COLORS, hole=0.4), use_container_width=True)
+# Channel split
+col_a, col_b = st.columns(2)
+with col_a:
+    ch_month = df.groupby(['Month','Channel'])['Final Sale Amount'].sum().reset_index()
+    ch_month = ch_month[ch_month['Month'].isin(MONTH_ORDER)]
+    ch_month['Month_Label'] = ch_month['Month'].map(MONTH_LABELS)
+    fig_ch = px.area(ch_month, x='Month_Label', y='Final Sale Amount', color='Channel',
+                     title="National vs Shopsy — Monthly Revenue",
+                     color_discrete_map={'National':'#2E86C1','Shopsy':'#E67E22'},
+                     markers=True)
+    dark_fig(fig_ch)
+    ind_axis(fig_ch, ch_month['Final Sale Amount'])
+    st.plotly_chart(fig_ch, use_container_width=True)
 
-    # By Brand — Frag vs Non-Frag breakdown
-    tg_brand = frag_df.groupby(["Brand","Type"]).agg(Final_Sale=("Final Sale Amount","sum")).reset_index()
-    fig_tgb = px.bar(tg_brand, x="Brand", y="Final_Sale", color="Type", barmode="group",
-        template="plotly_dark", title="Brand-wise: Fragrance vs Non-Fragrance Split",
-        color_discrete_map=FRAG_COLORS, labels={"Final_Sale":"Final Sale (₹)"})
-    max_tgb = tg_brand["Final_Sale"].max() if not tg_brand.empty else 1
-    ticks_tgb = [max_tgb*i/5 for i in range(6)]
-    fig_tgb.update_yaxes(tickvals=ticks_tgb, ticktext=["₹"+indian_fmt(v) for v in ticks_tgb])
-    st.plotly_chart(fig_tgb, use_container_width=True)
-
-    # By Channel — Frag vs Non-Frag
-    tg_ch = frag_df.groupby(["Channel","Type"]).agg(Final_Sale=("Final Sale Amount","sum")).reset_index()
-    fig_tgch = px.bar(tg_ch, x="Channel", y="Final_Sale", color="Type", barmode="group",
-        template="plotly_dark", title="Channel-wise: Fragrance vs Non-Fragrance",
-        color_discrete_map=FRAG_COLORS, labels={"Final_Sale":"Final Sale (₹)"})
-    max_tgch = tg_ch["Final_Sale"].max() if not tg_ch.empty else 1
-    ticks_tgch = [max_tgch*i/5 for i in range(6)]
-    fig_tgch.update_yaxes(tickvals=ticks_tgch, ticktext=["₹"+indian_fmt(v) for v in ticks_tgch])
-    st.plotly_chart(fig_tgch, use_container_width=True)
-
-    # Daily trend — Frag vs Non-Frag
-    dt_frag = frag_df.groupby(["Order Date","Type"]).agg(Final_Sale=("Final Sale Amount","sum")).reset_index()
-    fig_dtf = px.line(dt_frag, x="Order Date", y="Final_Sale", color="Type",
-        title="Daily Trend: Fragrance vs Non-Fragrance", template="plotly_dark",
-        color_discrete_map=FRAG_COLORS, labels={"Final_Sale":"Final Sale (₹)","Order Date":"Date"},
-        markers=True)
-    max_dtf = dt_frag["Final_Sale"].max() if not dt_frag.empty else 1
-    ticks_dtf = [max_dtf*i/5 for i in range(6)]
-    fig_dtf.update_yaxes(tickvals=ticks_dtf, ticktext=["₹"+indian_fmt(v) for v in ticks_dtf])
-    st.plotly_chart(fig_dtf, use_container_width=True)
-
-    # DoD Frag vs Non-Frag
-    with st.expander("📅 Frag vs Non-Frag — DoD Change"):
-        frag_dates = sorted(frag_df["Order Date"].unique())
-        if len(frag_dates) >= 2:
-            ft = frag_df[frag_df["Order Date"]==frag_dates[-1]].groupby("Type")["Final Sale Amount"].sum()
-            fy = frag_df[frag_df["Order Date"]==frag_dates[-2]].groupby("Type")["Final Sale Amount"].sum()
-            fdod = pd.DataFrame({"Today":ft,"Yesterday":fy}).fillna(0)
-            fdod["DoD %"] = ((fdod["Today"]-fdod["Yesterday"])/fdod["Yesterday"].replace(0,np.nan)*100).round(1)
-            fdod["Signal"] = fdod.apply(lambda r:
-                "🟢 Non-Frag Growing — keep pushing!" if (r.name=="Non-Fragrance" and r["DoD %"]>0)
-                else ("🔴 Non-Frag declining — investigate" if (r.name=="Non-Fragrance" and r["DoD %"]<0)
-                else ""), axis=1)
-            render_table(fdod.reset_index().rename(columns={"index":"Type"}),
-                {"Today":"₹{:,.0f}","Yesterday":"₹{:,.0f}","DoD %":"{:.1f}%"}, pct_cols=["DoD %"])
-        else:
-            st.info("Need 2+ days of data.")
-
-    # WoW Frag vs Non-Frag
-    with st.expander("📆 Frag vs Non-Frag — WoW Change"):
-        frag_df["Week"] = frag_df["Order Date"].dt.to_period("W").apply(lambda r: r.start_time)
-        fweeks = sorted(frag_df["Week"].unique())
-        if len(fweeks) >= 2:
-            fw1 = frag_df[frag_df["Week"]==fweeks[-1]].groupby("Type")["Final Sale Amount"].sum()
-            fw2 = frag_df[frag_df["Week"]==fweeks[-2]].groupby("Type")["Final Sale Amount"].sum()
-            fwow = pd.DataFrame({"This Week":fw1,"Last Week":fw2}).fillna(0)
-            fwow["WoW %"] = ((fwow["This Week"]-fwow["Last Week"])/fwow["Last Week"].replace(0,np.nan)*100).round(1)
-            fwow["Share This Week %"] = (fwow["This Week"]/fwow["This Week"].sum()*100).round(1)
-            fwow["Share Last Week %"] = (fwow["Last Week"]/fwow["Last Week"].sum()*100).round(1)
-            fwow["Share Shift"] = (fwow["Share This Week %"] - fwow["Share Last Week %"]).round(1)
-            render_table(fwow.reset_index().rename(columns={"index":"Type"}),
-                {"This Week":"₹{:,.0f}","Last Week":"₹{:,.0f}","WoW %":"{:.1f}%",
-                 "Share This Week %":"{:.1f}%","Share Last Week %":"{:.1f}%","Share Shift":"{:.1f}%"},
-                pct_cols=["WoW %","Share Shift"])
-        else:
-            st.info("Need 2+ weeks of data.")
-
-    # MoM Frag vs Non-Frag
-    with st.expander("🗓️ Frag vs Non-Frag — MoM Change"):
-        frag_df["Month"] = frag_df["Order Date"].dt.to_period("M").apply(lambda r: r.start_time)
-        fmonths = sorted(frag_df["Month"].unique())
-        if len(fmonths) >= 2:
-            fm1 = frag_df[frag_df["Month"]==fmonths[-1]].groupby("Type")["Final Sale Amount"].sum()
-            fm2 = frag_df[frag_df["Month"]==fmonths[-2]].groupby("Type")["Final Sale Amount"].sum()
-            fmom = pd.DataFrame({"This Month":fm1,"Last Month":fm2}).fillna(0)
-            fmom["MoM %"] = ((fmom["This Month"]-fmom["Last Month"])/fmom["Last Month"].replace(0,np.nan)*100).round(1)
-            fmom["Share This Month %"] = (fmom["This Month"]/fmom["This Month"].sum()*100).round(1)
-            fmom["Share Last Month %"] = (fmom["Last Month"]/fmom["Last Month"].sum()*100).round(1)
-            fmom["Share Shift"] = (fmom["Share This Month %"] - fmom["Share Last Month %"]).round(1)
-            render_table(fmom.reset_index().rename(columns={"index":"Type"}),
-                {"This Month":"₹{:,.0f}","Last Month":"₹{:,.0f}","MoM %":"{:.1f}%",
-                 "Share This Month %":"{:.1f}%","Share Last Month %":"{:.1f}%","Share Shift":"{:.1f}%"},
-                pct_cols=["MoM %","Share Shift"])
-
-            # Non-Frag category breakdown for current month
-            st.markdown("#### 🔍 Non-Frag Categories — This Month")
-            nf_cats = frag_df[(frag_df["Month"]==fmonths[-1]) & (frag_df["Type"]=="Non-Fragrance")]
-            nf_cat_grp = nf_cats.groupby("Category").agg(
-                Final_Sale=("Final Sale Amount","sum"),
-                Units=("Final Sale Units","sum"),
-                Cancellation=("Cancellation Amount","sum")
-            ).reset_index().sort_values("Final_Sale", ascending=False)
-            nf_cat_grp["Cancel Rate %"] = (nf_cat_grp["Cancellation"]/(nf_cat_grp["Final_Sale"]+nf_cat_grp["Cancellation"]).replace(0,np.nan)*100).round(1)
-            render_table(nf_cat_grp.rename(columns={"Final_Sale":"Final Sale (₹)","Cancellation":"Cancel (₹)","Units":"Units Sold"}),
-                {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Units Sold":"{:,.0f}","Cancel Rate %":"{:.1f}%"})
-        else:
-            st.info("Need 2+ months of data.")
-
-            # ════════════════════════════════════════════════════════════════════
-    # A. GMV LEAKAGE WATERFALL
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown("<div id='waterfall'></div>", unsafe_allow_html=True)
-    sec_hdr("💧 GMV Leakage Waterfall","waterfall")
-
-    gross_gmv   = df["GMV"].sum()
-    cancel_amt  = df["Cancellation Amount"].sum()
-    return_amt  = df["Return Amount"].sum()
-    final_sale  = df["Final Sale Amount"].sum()
-    leakage_pct = (cancel_amt + return_amt) / gross_gmv * 100 if gross_gmv > 0 else 0
-
-    wf1, wf2, wf3, wf4 = st.columns(4)
-    with wf1: metric_card("Gross GMV", gross_gmv)
-    with wf2: metric_card("Lost to Cancellations", cancel_amt, prefix="₹", suffix="")
-    with wf3: metric_card("Lost to Returns", return_amt, prefix="₹", suffix="")
-    with wf4: metric_card("Total Leakage %", round(leakage_pct, 1), prefix="", suffix="%")
-
-    wf_fig = go.Figure(go.Waterfall(
-        name="GMV Flow",
-        orientation="v",
-        measure=["absolute","relative","relative","total"],
+with col_b:
+    # GMV waterfall
+    wf = go.Figure(go.Waterfall(
+        orientation="v", measure=["absolute","relative","relative","total"],
         x=["Gross GMV","Cancellations","Returns","Final Sale"],
-        y=[gross_gmv, -cancel_amt, -return_amt, final_sale],
-        text=["₹"+indian_fmt(gross_gmv), "-₹"+indian_fmt(cancel_amt),
-              "-₹"+indian_fmt(return_amt), "₹"+indian_fmt(final_sale)],
+        y=[total_gmv, -total_cancel, -total_returns, total_rev],
+        text=[indian_fmt(total_gmv), f"-{indian_fmt(total_cancel)}", f"-{indian_fmt(total_returns)}", indian_fmt(total_rev)],
         textposition="outside",
-        decreasing=dict(marker_color="#e74c3c"),
-        increasing=dict(marker_color="#2ecc71"),
+        decreasing=dict(marker_color="#E74C3C"),
+        increasing=dict(marker_color="#2ECC71"),
         totals=dict(marker_color="#9B59B6"),
-        connector=dict(line=dict(color="#444466", width=1.5, dash="dot")),
+        connector=dict(line=dict(color="#333366", width=1.5, dash="dot"))
     ))
-    wf_fig.update_layout(template="plotly_dark", title="GMV → Final Sale Waterfall",
-                         height=420, showlegend=False)
-    max_wf = gross_gmv * 1.05
-    ticks_wf = [max_wf * i / 5 for i in range(6)]
-    wf_fig.update_yaxes(tickvals=ticks_wf, ticktext=["₹"+indian_fmt(v) for v in ticks_wf])
-    st.plotly_chart(wf_fig, use_container_width=True)
+    wf.update_layout(title="💧 GMV Leakage Waterfall", template="plotly_dark", height=380,
+                     paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(15,15,35,0.6)',
+                     font=dict(color='#c0c0e0'), margin=dict(l=10,r=10,t=40,b=10))
+    st.plotly_chart(wf, use_container_width=True)
 
-    # Waterfall by Brand
-    wf_brand = df.groupby("Brand").agg(
-        GMV=("GMV","sum"),
-        Cancel=("Cancellation Amount","sum"),
-        Returns=("Return Amount","sum"),
-        Final=("Final Sale Amount","sum")
-    ).reset_index().sort_values("GMV", ascending=False)
-    wf_brand["Leakage %"] = ((wf_brand["Cancel"]+wf_brand["Returns"])/wf_brand["GMV"].replace(0,np.nan)*100).round(1)
-    wf_brand["Recovery %"] = (wf_brand["Final"]/wf_brand["GMV"].replace(0,np.nan)*100).round(1)
-    render_table(wf_brand.rename(columns={"GMV":"Gross GMV (₹)","Cancel":"Cancellations (₹)",
-        "Returns":"Returns (₹)","Final":"Final Sale (₹)"}),
-        {"Gross GMV (₹)":"₹{:,.0f}","Cancellations (₹)":"₹{:,.0f}",
-         "Returns (₹)":"₹{:,.0f}","Final Sale (₹)":"₹{:,.0f}",
-         "Leakage %":"{:.1f}%","Recovery %":"{:.1f}%"})
+# Executive Insight Box
+col1, col2 = st.columns(2)
+with col1:
+    mom_growth = month_df['MoM_Growth'].iloc[-1] if len(month_df) > 1 else 0
+    growth_signal = "🟢 Positive" if mom_growth > 0 else "🔴 Declining"
+    st.markdown(f"""<div class='insight-box'>
+    <div style='color:#C39BD3;font-weight:700;font-size:14px;margin-bottom:8px'>📊 Executive Business Pulse</div>
+    <div style='color:#aaa;font-size:13px;line-height:1.7'>
+    • Total portfolio revenue: <b style='color:white'>{indian_fmt(total_rev)}</b> across selected period<br>
+    • NSV realization: <b style='color:#2ecc71'>{nsv_margin:.1f}%</b> of gross revenue (target >80%)<br>
+    • Revenue leakage (cancel+returns): <b style='color:#e74c3c'>{leakage:.1f}%</b> of GMV<br>
+    • FBF penetration: <b style='color:#3498db'>{fbf_pct:.1f}%</b> — {'above' if fbf_pct > 65 else 'below'} 65% benchmark<br>
+    • Latest MoM trend: <b style='color:{"#2ecc71" if mom_growth>0 else "#e74c3c"}'>{growth_signal} ({mom_growth:+.1f}%)</b><br>
+    • May projected full month: <b style='color:#9b59b6'>{indian_fmt(proj)}</b> ({proj_g:+.1f}% vs Apr)
+    </div></div>""", unsafe_allow_html=True)
 
-    # ════════════════════════════════════════════════════════════════════
-    # B. CANCELLATION DEEP DIVE
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown("<div id='cancel_deep'></div>", unsafe_allow_html=True)
-    sec_hdr("❌ Cancellation Deep Dive","cancel_deep")
+with col2:
+    top_brand = brand_pie.iloc[0]['Brand'] if len(brand_pie) > 0 else "N/A"
+    top_brand_rev = brand_pie.iloc[0]['Final Sale Amount'] if len(brand_pie) > 0 else 0
+    top_brand_share = top_brand_rev / total_rev * 100 if total_rev > 0 else 0
+    risks = []
+    if cancel_rate > 18: risks.append(f"⚠️ Cancellation rate {cancel_rate:.1f}% is critically high (>18%)")
+    if fbf_pct < 60: risks.append(f"⚠️ FBF at {fbf_pct:.1f}% — conversion risk from low FBF coverage")
+    if top_brand_share > 90: risks.append(f"⚠️ {top_brand} contributes {top_brand_share:.1f}% — portfolio concentration risk")
+    if not risks: risks.append("✅ All headline metrics within acceptable range")
+    opps = [
+        f"🚀 Non-Fragrance is growing — accelerate category expansion",
+        f"📈 Kenaz momentum building — scale FBF & search investment",
+        f"🎯 May run rate implies {indian_fmt(proj)} — push hard on promotions"
+    ]
+    st.markdown(f"""<div class='warning-box'>
+    <div style='color:#E74C3C;font-weight:700;font-size:14px;margin-bottom:8px'>🔴 Risks & Opportunities</div>
+    <div style='color:#aaa;font-size:13px;line-height:1.7'>
+    {"<br>".join(risks)}<br><br>
+    {"<br>".join(opps)}
+    </div></div>""", unsafe_allow_html=True)
 
-    # Cancel rate by Brand
-    can_brand = df.groupby("Brand").agg(
-        Sale=("Final Sale Amount","sum"),
-        Cancel=("Cancellation Amount","sum"),
-        Cancel_Units=("Cancellation Units","sum"),
-        Gross_Units=("Gross Units","sum")
+# ═══════════════════════════════════════════════════════════════
+# SECTION 2: BRAND INTELLIGENCE
+# ═══════════════════════════════════════════════════════════════
+section_header("Brand Intelligence — Deep Dive", "brand", "📊")
+
+brand_sum = df.groupby('Brand').agg(
+    Revenue=('Final Sale Amount','sum'),
+    Units=('Final Sale Units','sum'),
+    NSV=('NSV','sum'),
+    GMV=('GMV','sum'),
+    Cancel=('Cancellation Amount','sum'),
+    Returns=('Return Amount','sum'),
+    Cancel_Units=('Cancellation Units','sum'),
+    Return_Units=('Return Units','sum'),
+    Gross_Units=('Gross Units','sum')
+).reset_index()
+brand_sum['ASP'] = (brand_sum['Revenue'] / brand_sum['Units']).round(0)
+brand_sum['Cancel_Rate%'] = (brand_sum['Cancel'] / (brand_sum['Revenue'] + brand_sum['Cancel'])).fillna(0) * 100
+brand_sum['Return_Rate%'] = (brand_sum['Returns'] / (brand_sum['Revenue'] + brand_sum['Returns'])).fillna(0) * 100
+brand_sum['NSV_Margin%'] = (brand_sum['NSV'] / brand_sum['Revenue']).fillna(0) * 100
+brand_sum['Revenue_Share%'] = (brand_sum['Revenue'] / brand_sum['Revenue'].sum() * 100).round(1)
+brand_sum['FBF_Rev'] = df[df['Fulfillment Type']=='FBF'].groupby('Brand')['Final Sale Amount'].sum().reindex(brand_sum['Brand']).values
+brand_sum['FBF%'] = (brand_sum['FBF_Rev'] / brand_sum['Revenue'] * 100).fillna(0).round(1)
+brand_sum = brand_sum.sort_values('Revenue', ascending=False)
+
+# Brand performance table
+col1, col2 = st.columns([3,2])
+with col1:
+    fig_brand_bar = px.bar(brand_sum, x='Brand', y='Revenue',
+                           color='Brand', color_discrete_map=BRAND_COLORS,
+                           title="Brand Revenue Comparison",
+                           text=brand_sum['Revenue'].apply(indian_fmt))
+    dark_fig(fig_brand_bar)
+    ind_axis(fig_brand_bar, brand_sum['Revenue'])
+    fig_brand_bar.update_traces(textposition='outside')
+    st.plotly_chart(fig_brand_bar, use_container_width=True)
+
+with col2:
+    fig_asp = px.scatter(brand_sum, x='Cancel_Rate%', y='NSV_Margin%',
+                         size='Revenue', color='Brand', color_discrete_map=BRAND_COLORS,
+                         title="Cancel Rate vs NSV Margin (bubble=Revenue)",
+                         hover_data=['Revenue','Units','FBF%'])
+    dark_fig(fig_asp)
+    fig_asp.add_hline(y=80, line_dash="dash", line_color="#2ecc71", annotation_text="80% NSV target")
+    fig_asp.add_vline(x=18, line_dash="dash", line_color="#e74c3c", annotation_text="18% cancel threshold")
+    st.plotly_chart(fig_asp, use_container_width=True)
+
+# Brand MoM trend
+brand_monthly = df.groupby(['Month','Brand']).agg(Revenue=('Final Sale Amount','sum')).reset_index()
+brand_monthly = brand_monthly[brand_monthly['Month'].isin(MONTH_ORDER)]
+brand_monthly['Month_Label'] = brand_monthly['Month'].map(MONTH_LABELS)
+fig_bm = px.line(brand_monthly, x='Month_Label', y='Revenue', color='Brand',
+                 color_discrete_map=BRAND_COLORS, markers=True,
+                 title="Brand Monthly Revenue Trend")
+dark_fig(fig_bm)
+ind_axis(fig_bm, brand_monthly['Revenue'])
+st.plotly_chart(fig_bm, use_container_width=True)
+
+# Brand summary table
+st.markdown("**Brand Performance Matrix**")
+display_cols = ['Brand','Revenue','Units','ASP','NSV_Margin%','Cancel_Rate%','Return_Rate%','FBF%','Revenue_Share%']
+brand_display = brand_sum[display_cols].copy()
+brand_display['Revenue'] = brand_display['Revenue'].apply(indian_fmt)
+brand_display['ASP'] = brand_display['ASP'].apply(lambda x: f"₹{x:,.0f}")
+for pct_col in ['NSV_Margin%','Cancel_Rate%','Return_Rate%','FBF%','Revenue_Share%']:
+    brand_display[pct_col] = brand_display[pct_col].apply(lambda x: f"{x:.1f}%")
+st.dataframe(brand_display, use_container_width=True, hide_index=True)
+
+# Brand channel breakdown
+col3, col4 = st.columns(2)
+with col3:
+    bch = df.groupby(['Brand','Channel'])['Final Sale Amount'].sum().reset_index()
+    fig_bch = px.bar(bch, x='Brand', y='Final Sale Amount', color='Channel', barmode='group',
+                     title="Brand Revenue: National vs Shopsy",
+                     color_discrete_map={'National':'#2E86C1','Shopsy':'#E67E22'})
+    dark_fig(fig_bch)
+    ind_axis(fig_bch, bch['Final Sale Amount'])
+    st.plotly_chart(fig_bch, use_container_width=True)
+
+with col4:
+    bfbf = df.groupby(['Brand','Fulfillment Type'])['Final Sale Amount'].sum().reset_index()
+    fig_bfbf = px.bar(bfbf, x='Brand', y='Final Sale Amount', color='Fulfillment Type', barmode='group',
+                      title="Brand Revenue: FBF vs Non-FBF",
+                      color_discrete_map={'FBF':'#9B59B6','NON_FBF':'#3498DB'})
+    dark_fig(fig_bfbf)
+    ind_axis(fig_bfbf, bfbf['Final Sale Amount'])
+    st.plotly_chart(fig_bfbf, use_container_width=True)
+
+# ═══════════════════════════════════════════════════════════════
+# SECTION 3: CATEGORY ANALYSIS
+# ═══════════════════════════════════════════════════════════════
+section_header("Category Analysis — Revenue & Funnel", "category", "📦")
+
+cat_sum = df.groupby(['Category']).agg(
+    Revenue=('Final Sale Amount','sum'),
+    Units=('Final Sale Units','sum'),
+    NSV=('NSV','sum'),
+    Cancel=('Cancellation Amount','sum'),
+    Returns=('Return Amount','sum'),
+).reset_index().sort_values('Revenue', ascending=False)
+cat_sum['Cancel_Rate%'] = (cat_sum['Cancel'] / (cat_sum['Revenue'] + cat_sum['Cancel'])).fillna(0) * 100
+cat_sum['Return_Rate%'] = (cat_sum['Returns'] / (cat_sum['Revenue'] + cat_sum['Returns'])).fillna(0) * 100
+cat_sum['Share%'] = (cat_sum['Revenue'] / cat_sum['Revenue'].sum() * 100).round(1)
+
+col1, col2 = st.columns([3,2])
+with col1:
+    fig_cat = px.bar(cat_sum.head(8), x='Revenue', y='Category', orientation='h',
+                     color='Cancel_Rate%', color_continuous_scale=['#2ecc71','#f39c12','#e74c3c'],
+                     title="Category Revenue (color = Cancel Rate)",
+                     text=cat_sum.head(8)['Revenue'].apply(indian_fmt))
+    dark_fig(fig_cat, 360)
+    ind_axis(fig_cat, cat_sum['Revenue'], 'x')
+    fig_cat.update_traces(textposition='inside')
+    fig_cat.update_layout(yaxis=dict(autorange="reversed"))
+    st.plotly_chart(fig_cat, use_container_width=True)
+
+with col2:
+    fig_cat_pie = px.pie(cat_sum.head(6), values='Revenue', names='Category',
+                         title="Category Revenue Share", hole=0.4,
+                         color_discrete_sequence=PALETTE)
+    dark_fig(fig_cat_pie, 360)
+    st.plotly_chart(fig_cat_pie, use_container_width=True)
+
+# Category MoM trend
+cat_mom = df.groupby(['Month','Category'])['Final Sale Amount'].sum().reset_index()
+cat_mom = cat_mom[cat_mom['Month'].isin(MONTH_ORDER)]
+cat_mom['Month_Label'] = cat_mom['Month'].map(MONTH_LABELS)
+top_cats = cat_sum.head(5)['Category'].tolist()
+cat_mom_top = cat_mom[cat_mom['Category'].isin(top_cats)]
+fig_cat_trend = px.line(cat_mom_top, x='Month_Label', y='Final Sale Amount', color='Category',
+                        markers=True, title="Top Category Monthly Trend",
+                        color_discrete_sequence=PALETTE)
+dark_fig(fig_cat_trend)
+ind_axis(fig_cat_trend, cat_mom_top['Final Sale Amount'])
+st.plotly_chart(fig_cat_trend, use_container_width=True)
+
+# Heatmap: Brand x Category
+heat_df = df.groupby(['Brand','Category'])['Final Sale Amount'].sum().reset_index()
+top_cats_h = heat_df.groupby('Category')['Final Sale Amount'].sum().nlargest(8).index
+heat_df = heat_df[heat_df['Category'].isin(top_cats_h)]
+heat_piv = heat_df.pivot(index='Brand', columns='Category', values='Final Sale Amount').fillna(0)
+if not heat_piv.empty:
+    fig_heat = px.imshow(heat_piv, color_continuous_scale=['#07071a','#2a1a4a','#6C3483','#D7BDE2'],
+                         title="Brand × Category Revenue Heatmap", aspect='auto', text_auto=False)
+    ann = []
+    for i,b in enumerate(heat_piv.index):
+        for j,c in enumerate(heat_piv.columns):
+            v = heat_piv.loc[b,c]
+            if v > 0:
+                ann.append(dict(x=j,y=i,text=indian_fmt(v),showarrow=False,font=dict(size=8,color='white')))
+    fig_heat.update_layout(annotations=ann, height=300, template='plotly_dark',
+                           paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#c0c0e0'),
+                           margin=dict(l=10,r=10,t=40,b=10))
+    fig_heat.update_xaxes(tickangle=30)
+    st.plotly_chart(fig_heat, use_container_width=True)
+
+# ═══════════════════════════════════════════════════════════════
+# SECTION 4: FRAGRANCE vs NON-FRAGRANCE
+# ═══════════════════════════════════════════════════════════════
+section_header("Fragrance vs Non-Fragrance — Growth Intelligence", "frag", "🌸")
+
+frag_monthly = df.groupby(['Month','Type']).agg(Revenue=('Final Sale Amount','sum')).reset_index()
+frag_monthly = frag_monthly[frag_monthly['Month'].isin(MONTH_ORDER)]
+frag_monthly['Month_Label'] = frag_monthly['Month'].map(MONTH_LABELS)
+frag_total = frag_monthly.groupby('Month')['Revenue'].sum().reset_index().rename(columns={'Revenue':'Total'})
+frag_monthly = frag_monthly.merge(frag_total, on='Month')
+frag_monthly['Share%'] = (frag_monthly['Revenue'] / frag_monthly['Total'] * 100).round(1)
+
+# KPIs
+frag_sum = df.groupby('Type').agg(Revenue=('Final Sale Amount','sum'), Units=('Final Sale Units','sum')).reset_index()
+frag_rev = frag_sum[frag_sum['Type']=='Fragrance']['Revenue'].sum()
+nf_rev = frag_sum[frag_sum['Type']=='Non-Fragrance']['Revenue'].sum()
+frag_share = frag_rev / total_rev * 100
+nf_share = nf_rev / total_rev * 100
+
+c1,c2,c3,c4 = st.columns(4)
+with c1: metric_card("Fragrance Revenue", frag_rev, color="#C39BD3")
+with c2: metric_card("Non-Frag Revenue", nf_rev, color="#2ECC71")
+with c3: metric_card("Fragrance Share", round(frag_share,1), prefix="", suffix="%", color="#C39BD3")
+with c4: metric_card("Non-Frag Share", round(nf_share,1), prefix="", suffix="%", color="#2ECC71")
+
+col1, col2 = st.columns(2)
+with col1:
+    fig_ft = px.area(frag_monthly, x='Month_Label', y='Revenue', color='Type',
+                     title="Fragrance vs Non-Frag Monthly Revenue",
+                     color_discrete_map={'Fragrance':'#C39BD3','Non-Fragrance':'#2ECC71'},
+                     markers=True)
+    dark_fig(fig_ft)
+    ind_axis(fig_ft, frag_monthly['Revenue'])
+    st.plotly_chart(fig_ft, use_container_width=True)
+
+with col2:
+    nf_share_trend = frag_monthly[frag_monthly['Type']=='Non-Fragrance']
+    target_line = 25
+    fig_nfs = px.line(nf_share_trend, x='Month_Label', y='Share%', markers=True,
+                      title="Non-Frag Share % — Growth Tracker")
+    fig_nfs.add_hline(y=target_line, line_dash='dash', line_color='#2ecc71',
+                      annotation_text=f"Target: {target_line}%")
+    fig_nfs.update_traces(line_color='#2ECC71', line_width=2.5, marker=dict(size=8))
+    dark_fig(fig_nfs)
+    latest_nf = nf_share_trend['Share%'].iloc[-1] if len(nf_share_trend) > 0 else 0
+    gap = target_line - latest_nf
+    st.plotly_chart(fig_nfs, use_container_width=True)
+    color = "#e74c3c" if gap > 0 else "#2ecc71"
+    st.markdown(f"<div class='insight-box'>Current Non-Frag share: <b style='color:{color}'>{latest_nf:.1f}%</b> | Gap to {target_line}% target: <b style='color:{color}'>{gap:+.1f}pp</b><br>Non-Frag is the next growth lever — target ₹20L/month incremental</div>", unsafe_allow_html=True)
+
+# Brand x Type breakdown
+bt = df.groupby(['Brand','Type'])['Final Sale Amount'].sum().reset_index()
+fig_bt = px.bar(bt, x='Brand', y='Final Sale Amount', color='Type', barmode='group',
+                title="Brand: Fragrance vs Non-Frag Split",
+                color_discrete_map={'Fragrance':'#C39BD3','Non-Fragrance':'#2ECC71'})
+dark_fig(fig_bt)
+ind_axis(fig_bt, bt['Final Sale Amount'])
+st.plotly_chart(fig_bt, use_container_width=True)
+
+# ═══════════════════════════════════════════════════════════════
+# SECTION 5: SEARCH ANALYTICS
+# ═══════════════════════════════════════════════════════════════
+section_header("Search Traffic Analytics — Funnel Intelligence", "search", "🔍")
+
+# Overall search KPIs
+total_views = df_search_f['Product Views'].sum()
+total_clicks = df_search_f['Product Clicks'].sum()
+total_s_sales = df_search_f['Sales'].sum()
+avg_ctr = (total_clicks / total_views * 100) if total_views > 0 else 0
+avg_cvr = (total_s_sales / total_clicks * 100) if total_clicks > 0 else 0
+
+c1,c2,c3,c4,c5 = st.columns(5)
+with c1: metric_card("Total Views", total_views, prefix="", color="#3498DB")
+with c2: metric_card("Total Clicks", total_clicks, prefix="", color="#9B59B6")
+with c3: metric_card("Search Sales", total_s_sales, prefix="", color="#2ECC71")
+with c4: metric_card("Avg CTR", round(avg_ctr,2), prefix="", suffix="%", color="#F39C12")
+with c5: metric_card("Avg CVR", round(avg_cvr,2), prefix="", suffix="%", color="#E74C3C")
+
+# Search funnel
+col1, col2 = st.columns([2,1])
+with col1:
+    search_brand = df_search_f.groupby('Brand').agg(
+        Views=('Product Views','sum'),
+        Clicks=('Product Clicks','sum'),
+        Sales=('Sales','sum'),
+        CTR=('Click Through Rate','mean'),
+        CVR=('Conversion Rate','mean'),
+        Revenue=('Revenue','sum')
+    ).reset_index().sort_values('Revenue', ascending=False)
+    search_brand['CTR'] = search_brand['CTR'].round(2)
+    search_brand['CVR'] = search_brand['CVR'].round(2)
+    search_brand['Rev_per_Click'] = (search_brand['Revenue'] / search_brand['Clicks'].replace(0, np.nan)).fillna(0).round(1)
+    search_brand['Rev_per_View'] = (search_brand['Revenue'] / search_brand['Views'].replace(0, np.nan)).fillna(0).round(2)
+
+    fig_sbrand = px.scatter(search_brand, x='CTR', y='CVR', size='Revenue',
+                             color='Brand', color_discrete_map=BRAND_COLORS,
+                             title="Search Efficiency Matrix: CTR vs CVR (bubble=Revenue)",
+                             hover_data=['Views','Clicks','Sales','Rev_per_Click'])
+    dark_fig(fig_sbrand)
+    fig_sbrand.add_hline(y=3, line_dash='dash', line_color='#2ecc71', annotation_text="CVR 3% target")
+    fig_sbrand.add_vline(x=15, line_dash='dash', line_color='#f39c12', annotation_text="CTR 15% avg")
+    st.plotly_chart(fig_sbrand, use_container_width=True)
+
+with col2:
+    # Search funnel visualization
+    funnel_vals = [total_views, total_clicks, total_s_sales]
+    funnel_labels = [f"Views\n{total_views:,}", f"Clicks\n{total_clicks:,}", f"Sales\n{total_s_sales:,}"]
+    fig_funnel = go.Figure(go.Funnel(
+        y=["Product Views", "Product Clicks", "Sales"],
+        x=[total_views, total_clicks, total_s_sales],
+        textinfo="value+percent initial",
+        marker_color=["#3498DB","#9B59B6","#2ECC71"]
+    ))
+    fig_funnel.update_layout(title="Search Funnel (Overall)", template="plotly_dark", height=380,
+                             paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#c0c0e0'),
+                             margin=dict(l=10,r=10,t=40,b=10))
+    st.plotly_chart(fig_funnel, use_container_width=True)
+
+# Search monthly trend
+search_monthly = df_search_f.groupby('Month').agg(
+    Views=('Product Views','sum'), Clicks=('Product Clicks','sum'), Sales=('Sales','sum')
+).reset_index()
+search_monthly = search_monthly[search_monthly['Month'].isin(MONTH_ORDER)]
+search_monthly['Month_Label'] = search_monthly['Month'].map(MONTH_LABELS)
+search_monthly['CTR'] = (search_monthly['Clicks'] / search_monthly['Views'] * 100).fillna(0)
+search_monthly['CVR'] = (search_monthly['Sales'] / search_monthly['Clicks'] * 100).fillna(0)
+
+fig_sm = make_subplots(specs=[[{"secondary_y": True}]])
+fig_sm.add_trace(go.Bar(x=search_monthly['Month_Label'], y=search_monthly['Views'], name="Views",
+                        marker_color="#3498DB", opacity=0.7), secondary_y=False)
+fig_sm.add_trace(go.Bar(x=search_monthly['Month_Label'], y=search_monthly['Clicks'], name="Clicks",
+                        marker_color="#9B59B6", opacity=0.8), secondary_y=False)
+fig_sm.add_trace(go.Scatter(x=search_monthly['Month_Label'], y=search_monthly['CVR'], name="CVR%",
+                            line=dict(color="#2ECC71", width=2.5), mode='lines+markers'), secondary_y=True)
+fig_sm.update_layout(title="Monthly Search Traffic & CVR Trend", template="plotly_dark", height=380,
+                     barmode='group', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#c0c0e0'),
+                     margin=dict(l=10,r=10,t=40,b=10), legend=dict(orientation='h',y=1.12))
+fig_sm.update_yaxes(title_text="Views / Clicks", secondary_y=False)
+fig_sm.update_yaxes(title_text="CVR %", secondary_y=True)
+st.plotly_chart(fig_sm, use_container_width=True)
+
+# Top SKUs by search efficiency
+sku_search = df_search_f.groupby(['SKU Id','Brand']).agg(
+    Views=('Product Views','sum'), Clicks=('Product Clicks','sum'),
+    Sales=('Sales','sum'), Revenue=('Revenue','sum'),
+    CTR=('Click Through Rate','mean'), CVR=('Conversion Rate','mean')
+).reset_index()
+sku_search['CTR'] = sku_search['CTR'].round(2)
+sku_search['CVR'] = sku_search['CVR'].round(2)
+sku_search['Rev_per_Click'] = (sku_search['Revenue'] / sku_search['Clicks'].replace(0,np.nan)).fillna(0).round(1)
+top_search_skus = sku_search[sku_search['Revenue'] > 100000].nlargest(15, 'Revenue')
+
+with st.expander("🔍 Top SKUs by Search Revenue (click to expand)"):
+    display_s = top_search_skus[['SKU Id','Brand','Revenue','Views','Clicks','Sales','CTR','CVR','Rev_per_Click']].copy()
+    display_s['Revenue'] = display_s['Revenue'].apply(indian_fmt)
+    display_s['Views'] = display_s['Views'].apply(lambda x: f"{x:,}")
+    display_s['Clicks'] = display_s['Clicks'].apply(lambda x: f"{x:,}")
+    display_s['CTR'] = display_s['CTR'].apply(lambda x: f"{x:.2f}%")
+    display_s['CVR'] = display_s['CVR'].apply(lambda x: f"{x:.2f}%")
+    display_s['Rev_per_Click'] = display_s['Rev_per_Click'].apply(lambda x: f"₹{x:.1f}")
+    st.dataframe(display_s, use_container_width=True, hide_index=True)
+
+    # High traffic, low CVR — opportunity
+    inefficient = sku_search[(sku_search['Views'] > 50000) & (sku_search['CVR'] < 2)]
+    if not inefficient.empty:
+        st.markdown(f"""<div class='warning-box'><b style='color:#e74c3c'>⚠️ High Traffic, Low Conversion SKUs ({len(inefficient)})</b><br>
+        <span style='color:#aaa;font-size:12px'>These SKUs attract views but fail to convert — likely listing/content/pricing issues. Immediate intervention needed.</span></div>""", unsafe_allow_html=True)
+
+# ═══════════════════════════════════════════════════════════════
+# SECTION 6: FBF vs NON-FBF ANALYSIS
+# ═══════════════════════════════════════════════════════════════
+section_header("Fulfillment Analysis — FBF vs Non-FBF", "fbf", "🏭")
+
+fbf_sum = df.groupby('Fulfillment Type').agg(
+    Revenue=('Final Sale Amount','sum'), Units=('Final Sale Units','sum'),
+    Cancel=('Cancellation Amount','sum'), Returns=('Return Amount','sum'), GMV=('GMV','sum')
+).reset_index()
+fbf_sum['Cancel_Rate%'] = (fbf_sum['Cancel'] / (fbf_sum['Revenue'] + fbf_sum['Cancel'])).fillna(0) * 100
+fbf_sum['Return_Rate%'] = (fbf_sum['Returns'] / (fbf_sum['Revenue'] + fbf_sum['Returns'])).fillna(0) * 100
+fbf_sum['Recovery%'] = (fbf_sum['Revenue'] / fbf_sum['GMV'].replace(0,np.nan)).fillna(0) * 100
+
+c1,c2,c3,c4 = st.columns(4)
+fbf_row = fbf_sum[fbf_sum['Fulfillment Type']=='FBF'].iloc[0] if len(fbf_sum[fbf_sum['Fulfillment Type']=='FBF']) > 0 else None
+nfbf_row = fbf_sum[fbf_sum['Fulfillment Type']=='NON_FBF'].iloc[0] if len(fbf_sum[fbf_sum['Fulfillment Type']=='NON_FBF']) > 0 else None
+with c1: metric_card("FBF Revenue", fbf_row['Revenue'] if fbf_row is not None else 0, color="#9B59B6")
+with c2: metric_card("Non-FBF Revenue", nfbf_row['Revenue'] if nfbf_row is not None else 0, color="#3498DB")
+with c3: metric_card("FBF Cancel Rate", round(fbf_row['Cancel_Rate%'],1) if fbf_row is not None else 0, prefix="", suffix="%", color="#E74C3C")
+with c4: metric_card("Non-FBF Cancel Rate", round(nfbf_row['Cancel_Rate%'],1) if nfbf_row is not None else 0, prefix="", suffix="%", color="#F39C12")
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    fig_fbf_pie = px.pie(fbf_sum, values='Revenue', names='Fulfillment Type',
+                         title="Revenue: FBF vs Non-FBF", hole=0.4,
+                         color_discrete_map={'FBF':'#9B59B6','NON_FBF':'#3498DB'})
+    dark_fig(fig_fbf_pie, 320)
+    st.plotly_chart(fig_fbf_pie, use_container_width=True)
+
+with col2:
+    fig_fbf_cr = px.bar(fbf_sum, x='Fulfillment Type', y='Cancel_Rate%',
+                        color='Cancel_Rate%', color_continuous_scale=['#2ecc71','#f39c12','#e74c3c'],
+                        title="Cancel Rate: FBF vs Non-FBF", text='Cancel_Rate%')
+    fig_fbf_cr.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+    dark_fig(fig_fbf_cr, 320)
+    st.plotly_chart(fig_fbf_cr, use_container_width=True)
+
+with col3:
+    fig_fbf_rr = px.bar(fbf_sum, x='Fulfillment Type', y='Return_Rate%',
+                        color='Return_Rate%', color_continuous_scale=['#2ecc71','#f39c12','#e74c3c'],
+                        title="Return Rate: FBF vs Non-FBF", text='Return_Rate%')
+    fig_fbf_rr.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+    dark_fig(fig_fbf_rr, 320)
+    st.plotly_chart(fig_fbf_rr, use_container_width=True)
+
+# FBF by brand monthly
+fbf_brand_monthly = df.groupby(['Month','Brand','Fulfillment Type'])['Final Sale Amount'].sum().reset_index()
+fbf_brand_monthly = fbf_brand_monthly[fbf_brand_monthly['Month'].isin(MONTH_ORDER)]
+fbf_brand_monthly['Month_Label'] = fbf_brand_monthly['Month'].map(MONTH_LABELS)
+fbf_only = fbf_brand_monthly[fbf_brand_monthly['Fulfillment Type']=='FBF']
+fig_fbf_trend = px.line(fbf_only, x='Month_Label', y='Final Sale Amount', color='Brand',
+                        markers=True, title="FBF Revenue by Brand — Monthly Trend",
+                        color_discrete_map=BRAND_COLORS)
+dark_fig(fig_fbf_trend)
+ind_axis(fig_fbf_trend, fbf_only['Final Sale Amount'])
+st.plotly_chart(fig_fbf_trend, use_container_width=True)
+
+if fbf_row is not None and nfbf_row is not None:
+    fbf_cr = fbf_row['Cancel_Rate%']
+    nfbf_cr = nfbf_row['Cancel_Rate%']
+    cancel_diff = nfbf_cr - fbf_cr
+    st.markdown(f"""<div class='insight-box'>
+    <b style='color:#D7BDE2'>🏭 Fulfillment Intelligence</b><br>
+    <span style='color:#aaa;font-size:13px'>
+    • FBF contributes <b style='color:#9B59B6'>{fbf_pct:.1f}%</b> of revenue — {'strong' if fbf_pct>65 else 'needs improvement'}<br>
+    • FBF cancel rate {fbf_cr:.1f}% vs Non-FBF {nfbf_cr:.1f}% — FBF is {abs(cancel_diff):.1f}pp {'better' if cancel_diff>0 else 'worse'}<br>
+    • Recommendation: Migrate high-velocity Non-FBF SKUs to FBF to reduce cancellations & improve conversion
+    </span></div>""", unsafe_allow_html=True)
+
+# ═══════════════════════════════════════════════════════════════
+# SECTION 7: RETURNS & CANCELLATIONS
+# ═══════════════════════════════════════════════════════════════
+section_header("Returns & Cancellation Command Center", "rnc", "❌")
+
+c1,c2,c3,c4 = st.columns(4)
+with c1: metric_card("Revenue Lost (Cancel)", total_cancel, color="#E74C3C")
+with c2: metric_card("Revenue Lost (Returns)", total_returns, color="#E67E22")
+with c3: metric_card("Overall Cancel Rate", round(cancel_rate,1), prefix="", suffix="%", color="#E74C3C")
+with c4: metric_card("Overall Return Rate", round(return_rate,1), prefix="", suffix="%", color="#E67E22")
+
+# Cancel by brand
+col1, col2 = st.columns(2)
+with col1:
+    fig_cr_brand = px.bar(brand_sum.sort_values('Cancel_Rate%',ascending=False),
+                          x='Brand', y='Cancel_Rate%', color='Cancel_Rate%',
+                          color_continuous_scale=['#2ecc71','#f39c12','#e74c3c'],
+                          title="Cancel Rate % by Brand", text='Cancel_Rate%')
+    fig_cr_brand.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+    fig_cr_brand.add_hline(y=18, line_dash='dash', line_color='#e74c3c', annotation_text="18% alert threshold")
+    dark_fig(fig_cr_brand)
+    st.plotly_chart(fig_cr_brand, use_container_width=True)
+
+with col2:
+    # Monthly cancel & return trend
+    rnc_monthly = df.groupby('Month').agg(
+        Revenue=('Final Sale Amount','sum'),
+        Cancel=('Cancellation Amount','sum'),
+        Returns=('Return Amount','sum')
     ).reset_index()
-    can_brand["Cancel Rate %"] = (can_brand["Cancel"]/(can_brand["Sale"]+can_brand["Cancel"]).replace(0,np.nan)*100).round(1)
-    can_brand["Unit Cancel Rate %"] = (can_brand["Cancel_Units"]/can_brand["Gross_Units"].replace(0,np.nan)*100).round(1)
-    can_brand = can_brand.sort_values("Cancel Rate %", ascending=False)
+    rnc_monthly = rnc_monthly[rnc_monthly['Month'].isin(MONTH_ORDER)]
+    rnc_monthly['Month_Label'] = rnc_monthly['Month'].map(MONTH_LABELS)
+    rnc_monthly['Cancel_Rate'] = (rnc_monthly['Cancel'] / (rnc_monthly['Revenue']+rnc_monthly['Cancel'])) * 100
+    rnc_monthly['Return_Rate'] = (rnc_monthly['Returns'] / (rnc_monthly['Revenue']+rnc_monthly['Returns'])) * 100
 
-    cd1, cd2 = st.columns(2)
-    with cd1:
-        fig_can_brand = px.bar(can_brand, x="Brand", y="Cancel Rate %",
-            color="Cancel Rate %", color_continuous_scale=["#2ecc71","#f39c12","#e74c3c"],
-            template="plotly_dark", title="Cancel Rate % by Brand",
-            text="Cancel Rate %")
-        fig_can_brand.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-        fig_can_brand.add_hline(y=15, line_dash="dash", line_color="#e74c3c",
-                                 annotation_text="15% threshold", annotation_position="top right")
-        st.plotly_chart(fig_can_brand, use_container_width=True)
-    with cd2:
-        fig_can_amt = px.bar(can_brand, x="Brand", y="Cancel",
-            color="Brand", template="plotly_dark", title="Cancellation Amount by Brand",
-            color_discrete_map=BRAND_COLORS, labels={"Cancel":"Cancel Amount (₹)"})
-        max_ca = can_brand["Cancel"].max() if not can_brand.empty else 1
-        ticks_ca = [max_ca*i/5 for i in range(6)]
-        fig_can_amt.update_yaxes(tickvals=ticks_ca, ticktext=["₹"+indian_fmt(v) for v in ticks_ca])
-        st.plotly_chart(fig_can_amt, use_container_width=True)
+    fig_rnc = px.line(rnc_monthly, x='Month_Label',
+                      y=['Cancel_Rate','Return_Rate'], markers=True,
+                      title="Monthly Cancel & Return Rate Trend",
+                      color_discrete_map={'Cancel_Rate':'#E74C3C','Return_Rate':'#E67E22'})
+    dark_fig(fig_rnc)
+    fig_rnc.add_hline(y=18, line_dash='dash', line_color='#e74c3c', annotation_text="Cancel threshold 18%")
+    st.plotly_chart(fig_rnc, use_container_width=True)
 
-    render_table(can_brand.rename(columns={"Sale":"Final Sale (₹)","Cancel":"Cancel Amt (₹)",
-        "Cancel_Units":"Cancel Units","Gross_Units":"Gross Units"}),
-        {"Final Sale (₹)":"₹{:,.0f}","Cancel Amt (₹)":"₹{:,.0f}",
-         "Cancel Units":"{:,.0f}","Gross Units":"{:,.0f}",
-         "Cancel Rate %":"{:.1f}%","Unit Cancel Rate %":"{:.1f}%"})
-
-    # Cancel rate by Vertical
-    with st.expander("📊 Cancel Rate by Vertical"):
-        can_vert = df.groupby("Vertical").agg(
-            Sale=("Final Sale Amount","sum"),
-            Cancel=("Cancellation Amount","sum")
-        ).reset_index()
-        can_vert["Cancel Rate %"] = (can_vert["Cancel"]/(can_vert["Sale"]+can_vert["Cancel"]).replace(0,np.nan)*100).round(1)
-        can_vert = can_vert[can_vert["Sale"]>0].sort_values("Cancel Rate %", ascending=False).head(20)
-        fig_cv = px.bar(can_vert, x="Vertical", y="Cancel Rate %",
-            color="Cancel Rate %", color_continuous_scale=["#2ecc71","#f39c12","#e74c3c"],
-            template="plotly_dark", title="Cancel Rate % by Vertical (Top 20)")
-        fig_cv.update_xaxes(tickangle=45)
-        fig_cv.add_hline(y=15, line_dash="dash", line_color="#e74c3c")
-        st.plotly_chart(fig_cv, use_container_width=True)
-        render_table(can_vert.rename(columns={"Sale":"Final Sale (₹)","Cancel":"Cancel (₹)"}),
-            {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Cancel Rate %":"{:.1f}%"})
-
-    # Top SKUs by cancel rate
-    with st.expander("🔍 Top SKUs by Cancellation Rate (min ₹1K sale)"):
-        can_sku = df.groupby(["SKU ID","Brand","Category"]).agg(
-            Sale=("Final Sale Amount","sum"),
-            Cancel=("Cancellation Amount","sum")
-        ).reset_index()
-        can_sku["Cancel Rate %"] = (can_sku["Cancel"]/(can_sku["Sale"]+can_sku["Cancel"]).replace(0,np.nan)*100).round(1)
-        can_sku = can_sku[can_sku["Sale"]>=1000].sort_values("Cancel Rate %", ascending=False).head(20)
-        render_table(can_sku.rename(columns={"Sale":"Final Sale (₹)","Cancel":"Cancel (₹)"}),
-            {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Cancel Rate %":"{:.1f}%"})
-
-    # Cancel trend over time
-    with st.expander("📈 Cancellation Rate Trend Over Time"):
-        can_trend = df.copy()
-        can_trend["Order Date"] = pd.to_datetime(can_trend["Order Date"])
-        can_trend["Week"] = can_trend["Order Date"].dt.to_period("W").apply(lambda r: r.start_time)
-        ct = can_trend.groupby("Week").agg(
-            Sale=("Final Sale Amount","sum"), Cancel=("Cancellation Amount","sum")
-        ).reset_index()
-        ct["Cancel Rate %"] = (ct["Cancel"]/(ct["Sale"]+ct["Cancel"]).replace(0,np.nan)*100).round(1)
-        fig_ct = px.line(ct, x="Week", y="Cancel Rate %", markers=True,
-            template="plotly_dark", title="Weekly Cancellation Rate Trend",
-            labels={"Cancel Rate %":"Cancel Rate %","Week":"Week"})
-        fig_ct.add_hline(y=15, line_dash="dash", line_color="#e74c3c",
-                          annotation_text="15% alert threshold")
-        fig_ct.update_traces(line_color="#e74c3c", line_width=2.5)
-        st.plotly_chart(fig_ct, use_container_width=True)
-
-    # ════════════════════════════════════════════════════════════════════
-    # C. RETURN RATE DEEP DIVE
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown("<div id='return_deep'></div>", unsafe_allow_html=True)
-    sec_hdr("↩️ Return Rate Deep Dive","return_deep")
-
-    ret_brand = df.groupby("Brand").agg(
-        Sale=("Final Sale Amount","sum"),
-        Returns=("Return Amount","sum"),
-        Return_Units=("Return Units","sum"),
-        Final_Units=("Final Sale Units","sum")
+# Top SKUs by cancel rate
+with st.expander("🔍 High Cancellation SKUs — Risk Register"):
+    sku_cancel = df.groupby(['SKU ID','Brand','Category']).agg(
+        Revenue=('Final Sale Amount','sum'), Cancel=('Cancellation Amount','sum')
     ).reset_index()
-    ret_brand["Return Rate %"] = (ret_brand["Returns"]/(ret_brand["Sale"]+ret_brand["Returns"]).replace(0,np.nan)*100).round(1)
-    ret_brand = ret_brand.sort_values("Return Rate %", ascending=False)
+    sku_cancel['Cancel_Rate%'] = (sku_cancel['Cancel'] / (sku_cancel['Revenue']+sku_cancel['Cancel'])).fillna(0) * 100
+    sku_cancel = sku_cancel[sku_cancel['Revenue'] >= 10000].sort_values('Cancel_Rate%', ascending=False).head(20)
+    sku_cancel['Revenue'] = sku_cancel['Revenue'].apply(indian_fmt)
+    sku_cancel['Cancel'] = sku_cancel['Cancel'].apply(indian_fmt)
+    sku_cancel['Cancel_Rate%'] = sku_cancel['Cancel_Rate%'].apply(lambda x: f"{x:.1f}%")
+    st.dataframe(sku_cancel, use_container_width=True, hide_index=True)
 
-    rb1, rb2 = st.columns(2)
-    with rb1:
-        fig_rb = px.bar(ret_brand, x="Brand", y="Return Rate %",
-            color="Return Rate %", color_continuous_scale=["#2ecc71","#f39c12","#e74c3c"],
-            template="plotly_dark", title="Return Rate % by Brand", text="Return Rate %")
-        fig_rb.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-        fig_rb.add_hline(y=10, line_dash="dash", line_color="#e67e22",
-                          annotation_text="10% threshold")
-        st.plotly_chart(fig_rb, use_container_width=True)
-    with rb2:
-        fig_rb2 = px.bar(ret_brand, x="Brand", y="Returns",
-            color="Brand", template="plotly_dark", title="Return Amount by Brand",
-            color_discrete_map=BRAND_COLORS, labels={"Returns":"Returns (₹)"})
-        max_rb = ret_brand["Returns"].max() if not ret_brand.empty else 1
-        ticks_rb = [max_rb*i/5 for i in range(6)]
-        fig_rb2.update_yaxes(tickvals=ticks_rb, ticktext=["₹"+indian_fmt(v) for v in ticks_rb])
-        st.plotly_chart(fig_rb2, use_container_width=True)
+# Category cancel analysis
+cat_cancel = df.groupby('Category').agg(
+    Revenue=('Final Sale Amount','sum'), Cancel=('Cancellation Amount','sum')
+).reset_index()
+cat_cancel['Cancel_Rate%'] = (cat_cancel['Cancel'] / (cat_cancel['Revenue']+cat_cancel['Cancel'])).fillna(0) * 100
+cat_cancel = cat_cancel[cat_cancel['Revenue']>50000].sort_values('Cancel_Rate%',ascending=False).head(10)
+fig_cc = px.bar(cat_cancel, x='Category', y='Cancel_Rate%', color='Cancel_Rate%',
+                color_continuous_scale=['#2ecc71','#f39c12','#e74c3c'],
+                title="Category Cancel Rate % (min ₹50K revenue)", text='Cancel_Rate%')
+fig_cc.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+fig_cc.update_xaxes(tickangle=30)
+dark_fig(fig_cc, 320)
+fig_cc.add_hline(y=18, line_dash='dash', line_color='#e74c3c')
+st.plotly_chart(fig_cc, use_container_width=True)
 
-    render_table(ret_brand.rename(columns={"Sale":"Final Sale (₹)","Returns":"Returns (₹)",
-        "Return_Units":"Return Units","Final_Units":"Final Sale Units"}),
-        {"Final Sale (₹)":"₹{:,.0f}","Returns (₹)":"₹{:,.0f}",
-         "Return Units":"{:,.0f}","Final Sale Units":"{:,.0f}","Return Rate %":"{:.1f}%"})
+# ═══════════════════════════════════════════════════════════════
+# SECTION 8: SKU INTELLIGENCE
+# ═══════════════════════════════════════════════════════════════
+section_header("SKU Intelligence & Health Scorecard", "sku", "🏆")
 
-    with st.expander("📦 Return Rate by Category"):
-        ret_cat = df.groupby(["Category","Brand"]).agg(
-            Sale=("Final Sale Amount","sum"), Returns=("Return Amount","sum")
-        ).reset_index()
-        ret_cat["Return Rate %"] = (ret_cat["Returns"]/(ret_cat["Sale"]+ret_cat["Returns"]).replace(0,np.nan)*100).round(1)
-        ret_cat = ret_cat[ret_cat["Sale"]>=1000].sort_values("Return Rate %", ascending=False).head(20)
-        render_table(ret_cat.rename(columns={"Sale":"Final Sale (₹)","Returns":"Returns (₹)"}),
-            {"Final Sale (₹)":"₹{:,.0f}","Returns (₹)":"₹{:,.0f}","Return Rate %":"{:.1f}%"})
+# SKU aggregation
+sku_df = df.groupby(['SKU ID','Brand','Category','Vertical']).agg(
+    Revenue=('Final Sale Amount','sum'), Units=('Final Sale Units','sum'),
+    NSV=('NSV','sum'), GMV=('GMV','sum'),
+    Cancel=('Cancellation Amount','sum'), Returns=('Return Amount','sum'),
+    Gross_Units=('Gross Units','sum')
+).reset_index()
+sku_df['ASP'] = (sku_df['Revenue'] / sku_df['Units'].replace(0,np.nan)).fillna(0).round(0)
+sku_df['Cancel_Rate'] = (sku_df['Cancel'] / (sku_df['Revenue']+sku_df['Cancel'])).fillna(0)*100
+sku_df['Return_Rate'] = (sku_df['Returns'] / (sku_df['Revenue']+sku_df['Returns'])).fillna(0)*100
+sku_df['NSV_Margin'] = (sku_df['NSV'] / sku_df['Revenue'].replace(0,np.nan)).fillna(0)*100
 
-    # ════════════════════════════════════════════════════════════════════
-    # D. FULFILLMENT TYPE ANALYSIS
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown("<div id='fulfillment'></div>", unsafe_allow_html=True)
-    sec_hdr("🏷️ Fulfillment Type Analysis","fulfillment")
+# FBF per SKU
+fbf_sku = df[df['Fulfillment Type']=='FBF'].groupby('SKU ID')['Final Sale Amount'].sum().reset_index()
+fbf_sku.columns = ['SKU ID','FBF_Rev']
+sku_df = sku_df.merge(fbf_sku, on='SKU ID', how='left')
+sku_df['FBF_Rev'] = sku_df['FBF_Rev'].fillna(0)
+sku_df['FBF%'] = (sku_df['FBF_Rev'] / sku_df['Revenue'].replace(0,np.nan)).fillna(0)*100
 
-    ft_grp = df.groupby("Fulfillment Type").agg(
-        Final_Sale=("Final Sale Amount","sum"),
-        Cancel=("Cancellation Amount","sum"),
-        Returns=("Return Amount","sum"),
-        Units=("Final Sale Units","sum"),
-        GMV=("GMV","sum")
-    ).reset_index()
-    ft_grp["Cancel Rate %"] = (ft_grp["Cancel"]/(ft_grp["Final_Sale"]+ft_grp["Cancel"]).replace(0,np.nan)*100).round(1)
-    ft_grp["Return Rate %"] = (ft_grp["Returns"]/(ft_grp["Final_Sale"]+ft_grp["Returns"]).replace(0,np.nan)*100).round(1)
-    ft_grp["Recovery %"] = (ft_grp["Final_Sale"]/ft_grp["GMV"].replace(0,np.nan)*100).round(1)
-    ft_grp = ft_grp.sort_values("Final_Sale", ascending=False)
+# Health Score
+sku_min = sku_df[sku_df['Revenue'] >= 5000].copy()
+if len(sku_min) > 5:
+    sku_min['Rev_Score'] = pd.qcut(sku_min['Revenue'].rank(method='first'), 5, labels=[1,2,3,4,5]).astype(float)
+    sku_min['Cancel_Score'] = pd.qcut(sku_min['Cancel_Rate'].rank(method='first',ascending=False), 5, labels=[1,2,3,4,5]).astype(float)
+    sku_min['Return_Score'] = pd.qcut(sku_min['Return_Rate'].rank(method='first',ascending=False), 5, labels=[1,2,3,4,5]).astype(float)
+    sku_min['FBF_Score'] = sku_min['FBF%'].apply(lambda x: 5 if x>80 else (4 if x>60 else (3 if x>40 else (2 if x>20 else 1))))
+    sku_min['Health_Score'] = ((sku_min['Rev_Score']*0.35 + sku_min['Cancel_Score']*0.3 + sku_min['Return_Score']*0.2 + sku_min['FBF_Score']*0.15)*20).round(0).astype(int)
+    sku_min['Status'] = sku_min['Health_Score'].apply(lambda x: '🟢 Healthy' if x>=70 else ('🟡 Watch' if x>=45 else '🔴 Critical'))
 
-    ff1, ff2, ff3 = st.columns(3)
-    with ff1:
-        st.plotly_chart(px.pie(ft_grp, values="Final_Sale", names="Fulfillment Type",
-            title="Sale Share by Fulfillment", template="plotly_dark",
-            color_discrete_sequence=PIE_COLORS, hole=0.35), use_container_width=True)
-    with ff2:
-        fig_ff2 = px.bar(ft_grp, x="Fulfillment Type", y="Cancel Rate %",
-            color="Cancel Rate %", color_continuous_scale=["#2ecc71","#f39c12","#e74c3c"],
-            template="plotly_dark", title="Cancel Rate by Fulfillment Type", text="Cancel Rate %")
-        fig_ff2.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-        st.plotly_chart(fig_ff2, use_container_width=True)
-    with ff3:
-        fig_ff3 = px.bar(ft_grp, x="Fulfillment Type", y="Return Rate %",
-            color="Return Rate %", color_continuous_scale=["#2ecc71","#f39c12","#e74c3c"],
-            template="plotly_dark", title="Return Rate by Fulfillment Type", text="Return Rate %")
-        fig_ff3.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-        st.plotly_chart(fig_ff3, use_container_width=True)
+    c1,c2,c3 = st.columns(3)
+    with c1: metric_card("🟢 Healthy SKUs", len(sku_min[sku_min['Status']=='🟢 Healthy']), prefix="", color="#2ECC71")
+    with c2: metric_card("🟡 Watch SKUs", len(sku_min[sku_min['Status']=='🟡 Watch']), prefix="", color="#F39C12")
+    with c3: metric_card("🔴 Critical SKUs", len(sku_min[sku_min['Status']=='🔴 Critical']), prefix="", color="#E74C3C")
 
-    render_table(ft_grp.rename(columns={"Final_Sale":"Final Sale (₹)","Cancel":"Cancel (₹)",
-        "Returns":"Returns (₹)","Units":"Units Sold","GMV":"Gross GMV (₹)"}),
-        {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Returns (₹)":"₹{:,.0f}",
-         "Units Sold":"{:,.0f}","Gross GMV (₹)":"₹{:,.0f}",
-         "Cancel Rate %":"{:.1f}%","Return Rate %":"{:.1f}%","Recovery %":"{:.1f}%"})
+    status_f = st.selectbox("Filter SKU Status", ["All","🟢 Healthy","🟡 Watch","🔴 Critical"])
+    sku_show = sku_min if status_f == "All" else sku_min[sku_min['Status']==status_f]
+    sku_show = sku_show.sort_values('Health_Score', ascending=False).head(30)
+    sku_display = sku_show[['SKU ID','Brand','Category','Revenue','Units','ASP','Cancel_Rate','Return_Rate','FBF%','Health_Score','Status']].copy()
+    sku_display['Revenue'] = sku_display['Revenue'].apply(indian_fmt)
+    sku_display['ASP'] = sku_display['ASP'].apply(lambda x: f"₹{x:.0f}")
+    for c in ['Cancel_Rate','Return_Rate','FBF%']:
+        sku_display[c] = sku_display[c].apply(lambda x: f"{x:.1f}%")
+    st.dataframe(sku_display, use_container_width=True, hide_index=True)
 
-    # ════════════════════════════════════════════════════════════════════
-    # E. NEW SKU TRACKER
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown("<div id='new_skus'></div>", unsafe_allow_html=True)
-    sec_hdr("🆕 New SKU Tracker","new_skus")
+# Top 15 SKUs by Revenue
+col1, col2 = st.columns(2)
+with col1:
+    top15 = sku_df.nlargest(15,'Revenue')
+    fig_top = px.bar(top15, x='Revenue', y='SKU ID', orientation='h',
+                     color='Brand', color_discrete_map=BRAND_COLORS,
+                     title="Top 15 SKUs by Revenue",
+                     text=top15['Revenue'].apply(indian_fmt))
+    fig_top.update_traces(textposition='inside')
+    fig_top.update_layout(yaxis=dict(autorange="reversed"))
+    dark_fig(fig_top, 500)
+    ind_axis(fig_top, top15['Revenue'], 'x')
+    st.plotly_chart(fig_top, use_container_width=True)
 
-    new_sku_df = df.copy()
-    new_sku_df["Order Date"] = pd.to_datetime(new_sku_df["Order Date"])
-    max_dt = new_sku_df["Order Date"].max()
+with col2:
+    # Revenue vs Cancel scatter
+    sku_scatter = sku_df[sku_df['Revenue'] > 50000]
+    fig_scat = px.scatter(sku_scatter, x='Cancel_Rate', y='Return_Rate',
+                          size='Revenue', color='Brand',
+                          color_discrete_map=BRAND_COLORS,
+                          title="SKU Risk Map: Cancel vs Return Rate",
+                          hover_data=['SKU ID','Revenue','Units'])
+    dark_fig(fig_scat, 500)
+    fig_scat.add_hline(y=5, line_dash='dash', line_color='#e67e22', annotation_text="5% return threshold")
+    fig_scat.add_vline(x=18, line_dash='dash', line_color='#e74c3c', annotation_text="18% cancel threshold")
+    st.plotly_chart(fig_scat, use_container_width=True)
 
-    ns1, ns2 = st.columns(2)
-    with ns1:
-        window_days = st.selectbox("New SKU window", [7, 14, 30], index=0, key="new_sku_window")
-    cutoff = max_dt - pd.Timedelta(days=window_days)
+# ═══════════════════════════════════════════════════════════════
+# SECTION 9: GROWTH DIAGNOSTICS
+# ═══════════════════════════════════════════════════════════════
+section_header("Growth Diagnostics — Winners vs Losers", "growth", "📈")
 
-    recent_skus = set(new_sku_df[new_sku_df["Order Date"] >= cutoff]["SKU ID"].astype(str).unique())
-    older_skus  = set(new_sku_df[new_sku_df["Order Date"] <  cutoff]["SKU ID"].astype(str).unique())
-    truly_new   = recent_skus - older_skus
+# WoW SKU analysis
+df_sku_weekly = df.groupby(['SKU ID','Brand','Category','Week'])['Final Sale Amount'].sum().reset_index()
+weeks_sorted = sorted(df_sku_weekly['Week'].unique())
+if len(weeks_sorted) >= 2:
+    last_wk = df_sku_weekly[df_sku_weekly['Week']==weeks_sorted[-1]].groupby(['SKU ID','Brand','Category'])['Final Sale Amount'].sum().reset_index()
+    prev_wk = df_sku_weekly[df_sku_weekly['Week']==weeks_sorted[-2]].groupby('SKU ID')['Final Sale Amount'].sum().reset_index()
+    last_wk.columns = ['SKU ID','Brand','Category','This_Week']
+    prev_wk.columns = ['SKU ID','Last_Week']
+    wow_skus = last_wk.merge(prev_wk, on='SKU ID', how='outer').fillna(0)
+    wow_skus['WoW%'] = ((wow_skus['This_Week'] - wow_skus['Last_Week']) / wow_skus['Last_Week'].replace(0,np.nan) * 100).round(1)
+    wow_skus = wow_skus[wow_skus['Last_Week'] >= 1000]
 
-    st.markdown(f"<div style='background:rgba(46,204,113,0.1);border:1px solid rgba(46,204,113,0.3);border-radius:10px;padding:10px 16px;margin:8px 0'>"
-                f"<span style='color:#2ecc71;font-weight:700'>🆕 {len(truly_new)} new SKUs</span>"
-                f"<span style='color:#aaa;font-size:13px'> appeared in last {window_days} days that had zero sales before</span></div>",
-                unsafe_allow_html=True)
+    growing_skus = wow_skus[wow_skus['WoW%'] > 0].nlargest(10, 'WoW%')
+    declining_skus = wow_skus[wow_skus['WoW%'] < 0].nsmallest(10, 'WoW%')
 
-    if truly_new:
-        new_sku_data = new_sku_df[
-            (new_sku_df["Order Date"] >= cutoff) &
-            (new_sku_df["SKU ID"].astype(str).isin(truly_new))
-        ].groupby(["SKU ID","Brand","Category","Fulfillment Type"]).agg(
-            Final_Sale=("Final Sale Amount","sum"),
-            Units=("Final Sale Units","sum"),
-            Cancel=("Cancellation Amount","sum"),
-            Days_Active=("Order Date", lambda x: x.nunique())
-        ).reset_index().sort_values("Final_Sale", ascending=False)
-        new_sku_data["Cancel Rate %"] = (new_sku_data["Cancel"]/(new_sku_data["Final_Sale"]+new_sku_data["Cancel"]).replace(0,np.nan)*100).round(1)
-        new_sku_data["Daily Avg (₹)"] = (new_sku_data["Final_Sale"]/new_sku_data["Days_Active"].replace(0,np.nan)).round(0)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("<div class='success-box'><b style='color:#2ecc71'>📈 Top 10 Growing SKUs (WoW)</b></div>", unsafe_allow_html=True)
+        fig_grow = px.bar(growing_skus, x='WoW%', y='SKU ID', orientation='h',
+                          color='Brand', color_discrete_map=BRAND_COLORS,
+                          title=f"Growing SKUs (vs week of {weeks_sorted[-2]})")
+        fig_grow.update_layout(yaxis=dict(autorange="reversed"))
+        dark_fig(fig_grow, 400)
+        st.plotly_chart(fig_grow, use_container_width=True)
 
-        fig_ns = px.bar(new_sku_data.head(20), x="SKU ID", y="Final_Sale",
-            color="Brand", template="plotly_dark",
-            title=f"New SKUs — Final Sale (Last {window_days} Days)",
-            color_discrete_map=BRAND_COLORS, labels={"Final_Sale":"Final Sale (₹)"})
-        max_ns = new_sku_data["Final_Sale"].max() if not new_sku_data.empty else 1
-        ticks_ns = [max_ns*i/5 for i in range(6)]
-        fig_ns.update_yaxes(tickvals=ticks_ns, ticktext=["₹"+indian_fmt(v) for v in ticks_ns])
-        fig_ns.update_xaxes(tickangle=45)
-        st.plotly_chart(fig_ns, use_container_width=True)
+    with col2:
+        st.markdown("<div class='warning-box'><b style='color:#e74c3c'>📉 Top 10 Declining SKUs (WoW)</b></div>", unsafe_allow_html=True)
+        fig_dec = px.bar(declining_skus, x='WoW%', y='SKU ID', orientation='h',
+                         color='Brand', color_discrete_map=BRAND_COLORS,
+                         title="Declining SKUs")
+        fig_dec.update_layout(yaxis=dict(autorange="reversed"))
+        dark_fig(fig_dec, 400)
+        st.plotly_chart(fig_dec, use_container_width=True)
 
-        render_table(new_sku_data.rename(columns={"Final_Sale":"Final Sale (₹)","Cancel":"Cancel (₹)",
-            "Units":"Units","Days_Active":"Days Active"}),
-            {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Units":"{:,.0f}",
-             "Days Active":"{:,.0f}","Cancel Rate %":"{:.1f}%","Daily Avg (₹)":"₹{:,.0f}"})
+# Weekly brand heatmap
+brand_weekly = df.groupby(['Week','Brand'])['Final Sale Amount'].sum().reset_index()
+bw_piv = brand_weekly.pivot(index='Brand', columns='Week', values='Final Sale Amount').fillna(0)
+if not bw_piv.empty:
+    fig_bwh = px.imshow(bw_piv, color_continuous_scale=['#07071a','#2a1a4a','#6C3483','#D7BDE2'],
+                        title="Brand × Week Revenue Heatmap", aspect='auto')
+    ann_bw = []
+    for i,b in enumerate(bw_piv.index):
+        for j,w in enumerate(bw_piv.columns):
+            v = bw_piv.loc[b,w]
+            if v > 0:
+                ann_bw.append(dict(x=j,y=i,text=indian_fmt(v),showarrow=False,font=dict(size=7,color='white')))
+    fig_bwh.update_layout(annotations=ann_bw, height=250, template='plotly_dark',
+                           paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#c0c0e0'),
+                           margin=dict(l=10,r=10,t=40,b=10))
+    fig_bwh.update_xaxes(tickangle=45, tickfont=dict(size=8))
+    st.plotly_chart(fig_bwh, use_container_width=True)
+
+# MoM brand growth table
+mom_brand = df.groupby(['Month','Brand'])['Final Sale Amount'].sum().reset_index()
+mom_brand = mom_brand[mom_brand['Month'].isin(MONTH_ORDER)]
+mom_piv = mom_brand.pivot(index='Brand', columns='Month', values='Final Sale Amount').fillna(0)
+mom_piv.columns = [MONTH_LABELS.get(c,c) for c in mom_piv.columns]
+if len(mom_piv.columns) >= 2:
+    last_col = mom_piv.columns[-1]
+    prev_col = mom_piv.columns[-2]
+    mom_piv['MoM Growth%'] = ((mom_piv[last_col] - mom_piv[prev_col]) / mom_piv[prev_col].replace(0,np.nan) * 100).round(1)
+mom_display = mom_piv.copy()
+for c in mom_display.columns:
+    if c != 'MoM Growth%':
+        mom_display[c] = mom_display[c].apply(indian_fmt)
     else:
-        st.info(f"No brand-new SKUs in the last {window_days} days.")
+        mom_display[c] = mom_display[c].apply(lambda x: f"{x:+.1f}%" if not pd.isna(x) else "—")
+st.markdown("**Brand MoM Revenue Matrix**")
+st.dataframe(mom_display, use_container_width=True)
 
-    # ════════════════════════════════════════════════════════════════════
-    # F. SKU HEALTH SCORECARD
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown("<div id='sku_health'></div>", unsafe_allow_html=True)
-    sec_hdr("🏆 SKU Health Scorecard","sku_health")
+# ═══════════════════════════════════════════════════════════════
+# SECTION 10: EXCLUSIVES & RANGE ANALYSIS
+# ═══════════════════════════════════════════════════════════════
+section_header("Exclusives & Range Portfolio Analysis", "excl", "⭐")
 
-    sku_health = df.copy()
-    sku_health["Order Date"] = pd.to_datetime(sku_health["Order Date"])
-    sku_health["Week"] = sku_health["Order Date"].dt.to_period("W").apply(lambda r: r.start_time)
-    weeks_h = sorted(sku_health["Week"].unique())
+# Merge with master for exclusive / range data
+master_slim = master[['SKU ID','Exclusive','Range','F_Subcat','Subcat 2','Master_Category','Gender','Active/Discontinued']].copy()
+df_merged = df.merge(master_slim, on='SKU ID', how='left')
 
-    sh = sku_health.groupby(["SKU ID","Brand","Category"]).agg(
-        Sale=("Final Sale Amount","sum"),
-        Cancel=("Cancellation Amount","sum"),
-        Returns=("Return Amount","sum"),
-        Units=("Final Sale Units","sum"),
-        GMV=("GMV","sum")
-    ).reset_index()
-    sh["Cancel Rate %"] = (sh["Cancel"]/(sh["Sale"]+sh["Cancel"]).replace(0,np.nan)*100).round(1)
-    sh["Return Rate %"] = (sh["Returns"]/(sh["Sale"]+sh["Returns"]).replace(0,np.nan)*100).round(1)
+excl_sum = df_merged.groupby('Exclusive').agg(
+    Revenue=('Final Sale Amount','sum'), Units=('Final Sale Units','sum'),
+    Cancel=('Cancellation Amount','sum'), Returns=('Return Amount','sum')
+).reset_index()
+excl_sum['Cancel_Rate%'] = (excl_sum['Cancel']/(excl_sum['Revenue']+excl_sum['Cancel'])).fillna(0)*100
+excl_sum['Return_Rate%'] = (excl_sum['Returns']/(excl_sum['Revenue']+excl_sum['Returns'])).fillna(0)*100
+excl_sum = excl_sum.dropna(subset=['Exclusive'])
 
-    # WoW trend
-    if len(weeks_h) >= 2:
-        lw_h = sku_health[sku_health["Week"]==weeks_h[-1]].groupby("SKU ID")["Final Sale Amount"].sum()
-        pw_h = sku_health[sku_health["Week"]==weeks_h[-2]].groupby("SKU ID")["Final Sale Amount"].sum()
-        lw_h.index = lw_h.index.astype(str)
-        pw_h.index = pw_h.index.astype(str)
-        sh["SKU ID"] = sh["SKU ID"].astype(str)
-        sh["WoW %"] = sh["SKU ID"].map(
-            ((lw_h - pw_h) / pw_h.replace(0, np.nan) * 100).round(1)
-        )
-
-    sh = sh[sh["Sale"] >= 500].copy()
-
-    # Composite health score (0-100)
-    # Higher sale rank = better, lower cancel = better, lower return = better, positive WoW = better
-    sh["Sale_Score"]   = pd.qcut(sh["Sale"].rank(method="first"), 5, labels=[1,2,3,4,5]).astype(float)
-    sh["Cancel_Score"] = pd.qcut(sh["Cancel Rate %"].rank(method="first", ascending=False), 5, labels=[1,2,3,4,5]).astype(float)
-    sh["Return_Score"] = pd.qcut(sh["Return Rate %"].rank(method="first", ascending=False), 5, labels=[1,2,3,4,5]).astype(float)
-    if "WoW %" in sh.columns:
-        sh["WoW_Score"] = sh["WoW %"].apply(lambda x: 5 if x > 20 else (4 if x > 5 else (3 if x >= 0 else (2 if x > -20 else 1))) if pd.notna(x) else 3)
+col1, col2 = st.columns(2)
+with col1:
+    if not excl_sum.empty:
+        fig_excl = px.pie(excl_sum, values='Revenue', names='Exclusive',
+                          title="Revenue by Exclusive Type", hole=0.4,
+                          color_discrete_sequence=PALETTE)
+        dark_fig(fig_excl, 340)
+        st.plotly_chart(fig_excl, use_container_width=True)
     else:
-        sh["WoW_Score"] = 3
+        st.info("Exclusive breakdown not available after filter")
 
-    sh["Health Score"] = ((sh["Sale_Score"]*0.4 + sh["Cancel_Score"]*0.3 +
-                           sh["Return_Score"]*0.2 + sh["WoW_Score"]*0.1) * 20).round(0).astype(int)
-    sh["Status"] = sh["Health Score"].apply(
-        lambda x: "🟢 Healthy" if x >= 70 else ("🟡 Watch" if x >= 45 else "🔴 Critical"))
-    sh = sh.sort_values("Health Score", ascending=False)
+with col2:
+    range_sum = df_merged.groupby('Range').agg(
+        Revenue=('Final Sale Amount','sum'), Units=('Final Sale Units','sum')
+    ).reset_index().dropna(subset=['Range']).nlargest(12,'Revenue')
+    if not range_sum.empty:
+        fig_range = px.bar(range_sum, x='Revenue', y='Range', orientation='h',
+                           color='Revenue', color_continuous_scale=['#1a0a3a','#9B59B6','#D7BDE2'],
+                           title="Top 12 Ranges by Revenue",
+                           text=range_sum['Revenue'].apply(indian_fmt))
+        fig_range.update_traces(textposition='inside')
+        fig_range.update_layout(yaxis=dict(autorange="reversed"))
+        dark_fig(fig_range, 340)
+        ind_axis(fig_range, range_sum['Revenue'], 'x')
+        st.plotly_chart(fig_range, use_container_width=True)
 
-    # Summary
-    hc1, hc2, hc3 = st.columns(3)
-    with hc1: metric_card("🟢 Healthy SKUs", len(sh[sh["Status"]=="🟢 Healthy"]), prefix="", suffix="")
-    with hc2: metric_card("🟡 Watch SKUs",   len(sh[sh["Status"]=="🟡 Watch"]),   prefix="", suffix="")
-    with hc3: metric_card("🔴 Critical SKUs",len(sh[sh["Status"]=="🔴 Critical"]),prefix="", suffix="")
+# F-Subcat analysis
+fsubcat_sum = df_merged.groupby('F_Subcat').agg(
+    Revenue=('Final Sale Amount','sum'), Units=('Final Sale Units','sum'),
+    Cancel=('Cancellation Amount','sum')
+).reset_index().dropna(subset=['F_Subcat']).nlargest(12,'Revenue')
+fsubcat_sum['Cancel_Rate%'] = (fsubcat_sum['Cancel']/(fsubcat_sum['Revenue']+fsubcat_sum['Cancel'])).fillna(0)*100
+if not fsubcat_sum.empty:
+    fig_fsc = px.bar(fsubcat_sum, x='F_Subcat', y='Revenue', color='Cancel_Rate%',
+                     color_continuous_scale=['#2ecc71','#f39c12','#e74c3c'],
+                     title="F-Subcategory Revenue (color = Cancel Rate)",
+                     text=fsubcat_sum['Revenue'].apply(indian_fmt))
+    fig_fsc.update_traces(textposition='outside')
+    fig_fsc.update_xaxes(tickangle=35)
+    dark_fig(fig_fsc, 360)
+    ind_axis(fig_fsc, fsubcat_sum['Revenue'])
+    st.plotly_chart(fig_fsc, use_container_width=True)
 
-    status_filter = st.selectbox("Filter by Status", ["All","🟢 Healthy","🟡 Watch","🔴 Critical"], key="sku_health_filter")
-    sh_show = sh if status_filter == "All" else sh[sh["Status"]==status_filter]
+# Gender analysis
+gender_sum = df_merged.groupby('Gender').agg(Revenue=('Final Sale Amount','sum')).reset_index().dropna()
+if not gender_sum.empty and len(gender_sum) > 1:
+    fig_gen = px.pie(gender_sum, values='Revenue', names='Gender',
+                     title="Revenue by Gender Targeting", hole=0.4,
+                     color_discrete_sequence=PALETTE)
+    dark_fig(fig_gen, 280)
+    col1, col2 = st.columns([1,2])
+    with col1: st.plotly_chart(fig_gen, use_container_width=True)
+    with col2:
+        range_by_cat = df_merged.groupby(['Master_Category','Range'])['Final Sale Amount'].sum().reset_index()
+        range_by_cat = range_by_cat.dropna().nlargest(15,'Final Sale Amount')
+        fig_rbc = px.bar(range_by_cat, x='Range', y='Final Sale Amount', color='Master_Category',
+                         title="Top Ranges by Master Category",
+                         color_discrete_sequence=PALETTE)
+        dark_fig(fig_rbc, 280)
+        ind_axis(fig_rbc, range_by_cat['Final Sale Amount'])
+        fig_rbc.update_xaxes(tickangle=35)
+        st.plotly_chart(fig_rbc, use_container_width=True)
 
-    cols_sh = ["SKU ID","Brand","Category","Sale","Cancel Rate %","Return Rate %","Health Score","Status"]
-    if "WoW %" in sh.columns: cols_sh.insert(6, "WoW %")
-    render_table(sh_show[cols_sh].rename(columns={"Sale":"Final Sale (₹)"}),
-        {"Final Sale (₹)":"₹{:,.0f}","Cancel Rate %":"{:.1f}%",
-         "Return Rate %":"{:.1f}%","Health Score":"{:.0f}"},
-        pct_cols=["WoW %"] if "WoW %" in sh_show.columns else [])
+# ═══════════════════════════════════════════════════════════════
+# SECTION 11: ACTION RECOMMENDATIONS
+# ═══════════════════════════════════════════════════════════════
+section_header("Strategic Action Recommendations — RCA Engine", "actions", "🎯")
 
-    # ════════════════════════════════════════════════════════════════════
-    # G. TOP GROWING vs DECLINING SKUs
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown("<div id='sku_trends'></div>", unsafe_allow_html=True)
-    sec_hdr("📈 Top Growing vs Declining SKUs","sku_trends")
+# Auto-generate intelligent recommendations
+actions = []
 
-    sku_trend_df = df.copy()
-    sku_trend_df["Order Date"] = pd.to_datetime(sku_trend_df["Order Date"])
-    sku_trend_df["Week"] = sku_trend_df["Order Date"].dt.to_period("W").apply(lambda r: r.start_time)
-    weeks_st = sorted(sku_trend_df["Week"].unique())
+# Revenue analysis
+latest_month_data = df[df['Month'] == df['Month'].max()]
+prev_month_data = df[df['Month'] == sorted(df['Month'].unique())[-2]] if df['Month'].nunique() > 1 else pd.DataFrame()
+latest_rev = latest_month_data['Final Sale Amount'].sum()
+prev_rev = prev_month_data['Final Sale Amount'].sum() if not prev_month_data.empty else 0
+mom_g = (latest_rev - prev_rev)/prev_rev*100 if prev_rev > 0 else 0
 
-    if len(weeks_st) >= 2:
-        lw_st = sku_trend_df[sku_trend_df["Week"]==weeks_st[-1]].groupby(["SKU ID","Brand","Category"])["Final Sale Amount"].sum().reset_index()
-        pw_st = sku_trend_df[sku_trend_df["Week"]==weeks_st[-2]].groupby("SKU ID")["Final Sale Amount"].sum().reset_index()
-        lw_st.columns = ["SKU ID","Brand","Category","This Week"]
-        pw_st.columns = ["SKU ID","Last Week"]
-        lw_st["SKU ID"] = lw_st["SKU ID"].astype(str)
-        pw_st["SKU ID"] = pw_st["SKU ID"].astype(str)
-        merged_st = lw_st.merge(pw_st, on="SKU ID", how="outer").fillna(0)
-        merged_st["WoW %"] = ((merged_st["This Week"]-merged_st["Last Week"])/merged_st["Last Week"].replace(0,np.nan)*100).round(1)
-        merged_st = merged_st[merged_st["Last Week"] >= 500]
+if mom_g > 10:
+    actions.append(("🟢 HIGH PRIORITY", "Revenue Acceleration Opportunity",
+                    f"Latest month revenue grew {mom_g:.1f}% MoM. Capitalize by scaling FBF replenishment for top 10 SKUs, increasing ad budget by 20%, and expanding winning categories.",
+                    "#2ecc71"))
+elif mom_g < -5:
+    actions.append(("🔴 CRITICAL", "Revenue Decline — Immediate Action",
+                    f"Revenue declined {abs(mom_g):.1f}% MoM. Run immediate RCA: check top 5 SKU stock levels, compare cancellation rates, and review search visibility drops.",
+                    "#e74c3c"))
 
-        growing  = merged_st[merged_st["WoW %"] > 0].sort_values("WoW %", ascending=False).head(10)
-        declining= merged_st[merged_st["WoW %"] < 0].sort_values("WoW %").head(10)
+# Cancellation
+if cancel_rate > 20:
+    actions.append(("🔴 CRITICAL", "Cancellation Rate Crisis",
+                    f"Cancel rate at {cancel_rate:.1f}% — severely above 18% threshold. Revenue leaking {indian_fmt(total_cancel)}. Immediate actions: audit top-cancel SKUs, review promise date accuracy, push FBF migration for 5+ cancel-rate SKUs.",
+                    "#e74c3c"))
+elif cancel_rate > 15:
+    actions.append(("🟡 WATCH", "Elevated Cancellation Rate",
+                    f"Cancel rate {cancel_rate:.1f}% is above safe threshold. Target: below 15%. Focus on top 10 cancel-rate SKUs and migrate to FBF.",
+                    "#f39c12"))
 
-        gt1, gt2 = st.columns(2)
-        with gt1:
-            st.markdown("<div style='background:rgba(46,204,113,0.1);border:1px solid rgba(46,204,113,0.3);border-radius:8px;padding:8px 14px;margin-bottom:8px'><span style='color:#2ecc71;font-weight:700'>📈 Top 10 Growing SKUs (WoW)</span></div>", unsafe_allow_html=True)
-            if not growing.empty:
-                fig_grow = px.bar(growing, x="SKU ID", y="WoW %", color="Brand",
-                    template="plotly_dark", color_discrete_map=BRAND_COLORS,
-                    title="Top Growing SKUs", labels={"WoW %":"WoW Growth %"})
-                fig_grow.update_xaxes(tickangle=45)
-                st.plotly_chart(fig_grow, use_container_width=True)
-                render_table(growing, {"This Week":"₹{:,.0f}","Last Week":"₹{:,.0f}","WoW %":"{:.1f}%"}, pct_cols=["WoW %"])
-            else:
-                st.info("No growing SKUs this week.")
+# FBF
+if fbf_pct < 60:
+    actions.append(("🔴 CRITICAL", "FBF Penetration Below Target",
+                    f"FBF at {fbf_pct:.1f}% vs 65%+ target. Non-FBF typically has {(nfbf_row['Cancel_Rate%'] if nfbf_row is not None else 0):.1f}% vs FBF's {(fbf_row['Cancel_Rate%'] if fbf_row is not None else 0):.1f}% cancel rate. Migrate top 20 Non-FBF SKUs to FBF to recover ₹{(total_rev * 0.05):,.0f} in revenue.",
+                    "#e74c3c"))
 
-        with gt2:
-            st.markdown("<div style='background:rgba(231,76,60,0.1);border:1px solid rgba(231,76,60,0.3);border-radius:8px;padding:8px 14px;margin-bottom:8px'><span style='color:#e74c3c;font-weight:700'>📉 Top 10 Declining SKUs (WoW)</span></div>", unsafe_allow_html=True)
-            if not declining.empty:
-                fig_dec = px.bar(declining, x="SKU ID", y="WoW %", color="Brand",
-                    template="plotly_dark", color_discrete_map=BRAND_COLORS,
-                    title="Top Declining SKUs", labels={"WoW %":"WoW Change %"})
-                fig_dec.update_xaxes(tickangle=45)
-                st.plotly_chart(fig_dec, use_container_width=True)
-                render_table(declining, {"This Week":"₹{:,.0f}","Last Week":"₹{:,.0f}","WoW %":"{:.1f}%"}, pct_cols=["WoW %"])
-            else:
-                st.info("No declining SKUs this week.")
-    else:
-        st.info("Need at least 2 weeks of data.")
+# Non-frag
+if nf_share < 20:
+    actions.append(("🟡 WATCH", "Non-Fragrance Underperforming",
+                    f"Non-Frag share at {nf_share:.1f}% vs 25% target. Activate: launch non-frag exclusives, push skincare bundles via Shopsy, add 3 new grooming categories in next 30 days.",
+                    "#f39c12"))
 
-    # ════════════════════════════════════════════════════════════════════
-    # H. CATEGORY PERFORMANCE HEATMAP
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown("<div id='cat_heatmap'></div>", unsafe_allow_html=True)
-    sec_hdr("🗺️ Category Performance Heatmap","cat_heatmap")
+# Kenaz growth
+kenaz_rev = df[df['Brand']=='Kenaz']['Final Sale Amount'].sum()
+kenaz_pct = kenaz_rev / total_rev * 100
+if kenaz_pct > 2:
+    actions.append(("🟢 OPPORTUNITY", "Kenaz Showing Strong Growth Signal",
+                    f"Kenaz at {kenaz_pct:.1f}% revenue share with high search CTR ({search_brand[search_brand['Brand']=='Kenaz']['CTR'].values[0]:.1f}% if available). Scale: increase FBF coverage, boost ad spend by 30%, launch on Shopsy channel.",
+                    "#2ecc71"))
 
-    heat_df = df.groupby(["Brand","Category"])["Final Sale Amount"].sum().reset_index()
-    heat_pivot = heat_df.pivot(index="Brand", columns="Category", values="Final Sale Amount").fillna(0)
+# Search efficiency
+if avg_cvr < 3:
+    actions.append(("🟡 WATCH", "Search Conversion Below Benchmark",
+                    f"Overall search CVR at {avg_cvr:.2f}% vs 3% benchmark. {len(sku_search[(sku_search['Views']>50000)&(sku_search['CVR']<2)])} SKUs have high traffic but poor conversion — review listing quality, pricing, and images for these SKUs.",
+                    "#f39c12"))
 
-    if not heat_pivot.empty:
-        # Limit to top 15 categories by total sale
-        top_cats = heat_df.groupby("Category")["Final Sale Amount"].sum().nlargest(15).index
-        heat_pivot = heat_pivot[[c for c in top_cats if c in heat_pivot.columns]]
+# May MTD projection
+if proj_g and proj_g > 5:
+    actions.append(("🟢 OPPORTUNITY", "May on Track for Record Month",
+                    f"May projected at {indian_fmt(proj)} ({proj_g:+.1f}% vs Apr). Accelerate: push flash sales in final 2 weeks, increase FBF stock for top 5 SKUs, activate search ads for high-CTR keywords.",
+                    "#2ecc71"))
 
-        fig_heat = px.imshow(heat_pivot,
-            color_continuous_scale=["#0a0a14","#2a1a4a","#6C3483","#9B59B6","#D7BDE2"],
-            template="plotly_dark",
-            title="Brand × Category Final Sale Heatmap (₹)",
-            text_auto=False,
-            aspect="auto")
-        # Add text annotations
-        annotations = []
-        for i, brand in enumerate(heat_pivot.index):
-            for j, cat in enumerate(heat_pivot.columns):
-                val = heat_pivot.loc[brand, cat]
-                if val > 0:
-                    annotations.append(dict(
-                        x=j, y=i,
-                        text="₹" + indian_fmt(val),
-                        showarrow=False,
-                        font=dict(size=9, color="white")
-                    ))
-        fig_heat.update_layout(annotations=annotations, height=max(300, len(heat_pivot)*60))
-        fig_heat.update_xaxes(tickangle=45)
-        st.plotly_chart(fig_heat, use_container_width=True)
+# Return rate
+if return_rate > 5:
+    actions.append(("🟡 WATCH", "Return Rate Needs Attention",
+                    f"Return rate {return_rate:.1f}% indicates potential quality or expectation mismatch. Run: return reason analysis by category, quality audit on top-return SKUs, improve product descriptions.",
+                    "#f39c12"))
 
-        st.caption("💡 White spaces = growth opportunities. Dark cells = zero/low contribution.")
+# Brand concentration
+if top_brand_share > 90:
+    actions.append(("🟡 WATCH", "Portfolio Concentration Risk",
+                    f"{top_brand} at {top_brand_share:.1f}% is over-concentrated. Build: Kenaz to ₹50L/month, HipHop Skincare to ₹20L, Embarouge to ₹15L — diversify revenue base.",
+                    "#f39c12"))
 
-    # ════════════════════════════════════════════════════════════════════
-    # I. LOCATION ANALYSIS
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown("<div id='location'></div>", unsafe_allow_html=True)
-    sec_hdr("📍 Location Analysis","location")
+# Display recommendations
+st.markdown(f"**{len(actions)} Strategic Actions Generated Based on Current Data**")
+for priority, title, rec, color in actions:
+    st.markdown(f"""
+    <div style='background:rgba(0,0,0,0.2);border:1px solid {color}44;border-left:4px solid {color};
+                border-radius:10px;padding:16px 20px;margin:10px 0'>
+        <div style='display:flex;align-items:center;gap:10px;margin-bottom:8px'>
+            <span style='background:{color}22;border:1px solid {color}66;color:{color};font-size:10px;
+                         font-weight:700;padding:2px 8px;border-radius:4px;letter-spacing:1px'>{priority}</span>
+            <span style='color:white;font-weight:700;font-size:14px'>{title}</span>
+        </div>
+        <div style='color:#aaa;font-size:13px;line-height:1.7'>{rec}</div>
+    </div>""", unsafe_allow_html=True)
 
-    loc_grp = df.groupby("Location Id").agg(
-        Final_Sale=("Final Sale Amount","sum"),
-        Cancel=("Cancellation Amount","sum"),
-        Returns=("Return Amount","sum"),
-        Units=("Final Sale Units","sum"),
-        GMV=("GMV","sum")
-    ).reset_index()
-    loc_grp["Cancel Rate %"] = (loc_grp["Cancel"]/(loc_grp["Final_Sale"]+loc_grp["Cancel"]).replace(0,np.nan)*100).round(1)
-    loc_grp["Return Rate %"] = (loc_grp["Returns"]/(loc_grp["Final_Sale"]+loc_grp["Returns"]).replace(0,np.nan)*100).round(1)
-    loc_grp = loc_grp[loc_grp["Final_Sale"] > 0].sort_values("Final_Sale", ascending=False)
+# Brand-specific actions
+st.markdown("<br>**Brand-Level Action Plans**", unsafe_allow_html=True)
+for brand_name in brand_sum['Brand'].head(4).tolist():
+    b_df = df[df['Brand']==brand_name]
+    b_rev = b_df['Final Sale Amount'].sum()
+    b_cr = (b_df['Cancellation Amount'].sum() / (b_rev + b_df['Cancellation Amount'].sum())) * 100 if b_rev > 0 else 0
+    b_fbf = df[(df['Brand']==brand_name)&(df['Fulfillment Type']=='FBF')]['Final Sale Amount'].sum() / b_rev * 100 if b_rev > 0 else 0
+    b_mom = compute_mom_growth(df, brand_name)
 
-    la1, la2 = st.columns(2)
-    with la1:
-        top_locs = loc_grp.head(15)
-        fig_loc = px.bar(top_locs, x="Location Id", y="Final_Sale",
-            color="Cancel Rate %", color_continuous_scale=["#2ecc71","#f39c12","#e74c3c"],
-            template="plotly_dark", title="Top 15 Locations by Sale (color = Cancel Rate)",
-            labels={"Final_Sale":"Final Sale (₹)","Location Id":"Location"})
-        max_loc = top_locs["Final_Sale"].max() if not top_locs.empty else 1
-        ticks_loc = [max_loc*i/5 for i in range(6)]
-        fig_loc.update_yaxes(tickvals=ticks_loc, ticktext=["₹"+indian_fmt(v) for v in ticks_loc])
-        fig_loc.update_xaxes(tickangle=45)
-        st.plotly_chart(fig_loc, use_container_width=True)
-    with la2:
-        high_cancel_locs = loc_grp[loc_grp["Final_Sale"] >= loc_grp["Final_Sale"].quantile(0.25)].sort_values("Cancel Rate %", ascending=False).head(15)
-        fig_loc2 = px.bar(high_cancel_locs, x="Location Id", y="Cancel Rate %",
-            color="Cancel Rate %", color_continuous_scale=["#2ecc71","#f39c12","#e74c3c"],
-            template="plotly_dark", title="High Cancel Rate Locations",
-            text="Cancel Rate %")
-        fig_loc2.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-        fig_loc2.update_xaxes(tickangle=45)
-        st.plotly_chart(fig_loc2, use_container_width=True)
+    b_actions = []
+    if b_cr > 18: b_actions.append(f"⚠️ Cancel rate {b_cr:.1f}% — audit top SKUs, push FBF")
+    if b_fbf < 60: b_actions.append(f"📦 FBF at {b_fbf:.1f}% — migrate high-velocity SKUs")
+    if b_mom and b_mom < -5: b_actions.append(f"📉 MoM decline {b_mom:.1f}% — investigate demand drop")
+    if b_mom and b_mom > 10: b_actions.append(f"🚀 MoM growth {b_mom:.1f}% — scale inventory & ads")
+    if not b_actions: b_actions.append("✅ Metrics stable — focus on growth levers")
 
-    render_table(loc_grp.head(30).rename(columns={"Final_Sale":"Final Sale (₹)","Cancel":"Cancel (₹)",
-        "Returns":"Returns (₹)","Units":"Units Sold","GMV":"Gross GMV (₹)","Location Id":"Location"}),
-        {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Returns (₹)":"₹{:,.0f}",
-         "Units Sold":"{:,.0f}","Gross GMV (₹)":"₹{:,.0f}",
-         "Cancel Rate %":"{:.1f}%","Return Rate %":"{:.1f}%"})
+    with st.expander(f"{brand_name} — {indian_fmt(b_rev)} | Cancel {b_cr:.1f}% | FBF {b_fbf:.1f}%"):
+        for a in b_actions:
+            st.markdown(f"• {a}")
 
-    # ════════════════════════════════════════════════════════════════════
-    # J. NON-FRAG GROWTH TRACKER
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown("<div id='nonfrag_tracker'></div>", unsafe_allow_html=True)
-    sec_hdr("🌱 Non-Frag Growth Tracker","nonfrag_tracker")
-
-    nfg = df.copy()
-    nfg["Order Date"] = pd.to_datetime(nfg["Order Date"])
-    nfg["Type"] = nfg["Category"].apply(
-        lambda c: "Fragrance" if any(k in str(c).lower() for k in FRAG_KW) else "Non-Fragrance"
-    )
-    nfg["Week"] = nfg["Order Date"].dt.to_period("W").apply(lambda r: r.start_time)
-
-    nfg_weekly = nfg.groupby(["Week","Type"])["Final Sale Amount"].sum().reset_index()
-    nfg_total  = nfg_weekly.groupby("Week")["Final Sale Amount"].sum().reset_index().rename(columns={"Final Sale Amount":"Total"})
-    nfg_weekly = nfg_weekly.merge(nfg_total, on="Week")
-    nfg_weekly["Share %"] = (nfg_weekly["Final Sale Amount"]/nfg_weekly["Total"]*100).round(1)
-    nfg_nf = nfg_weekly[nfg_weekly["Type"]=="Non-Fragrance"].copy()
-
-    ngt1, ngt2 = st.columns(2)
-    nf_target = st.sidebar.selectbox("🌱 Non-Frag Share Target (%)", [20,25,30,35,40,45,50], index=2, key="nf_target")
-
-    with ngt1:
-        fig_nfg = px.line(nfg_nf, x="Week", y="Share %", markers=True,
-            template="plotly_dark", title="Non-Fragrance Share % — Weekly Trend",
-            labels={"Share %":"Non-Frag Share %","Week":"Week"})
-        fig_nfg.add_hline(y=nf_target, line_dash="dash", line_color="#2ecc71",
-                           annotation_text=f"Target: {nf_target}%", annotation_position="top right")
-        fig_nfg.update_traces(line_color="#2ecc71", line_width=2.5,
-                               marker=dict(size=8, color="#2ecc71"))
-        fig_nfg.update_yaxes(range=[0, max(nfg_nf["Share %"].max()*1.3, nf_target*1.2) if not nfg_nf.empty else 50])
-        st.plotly_chart(fig_nfg, use_container_width=True)
-
-    with ngt2:
-        fig_nfg2 = px.bar(nfg_weekly, x="Week", y="Final Sale Amount", color="Type",
-            template="plotly_dark", title="Weekly Sale: Frag vs Non-Frag",
-            color_discrete_map=FRAG_COLORS, labels={"Final Sale Amount":"Final Sale (₹)"})
-        max_nfg2 = nfg_weekly["Final Sale Amount"].max() if not nfg_weekly.empty else 1
-        ticks_nfg2 = [max_nfg2*i/5 for i in range(6)]
-        fig_nfg2.update_yaxes(tickvals=ticks_nfg2, ticktext=["₹"+indian_fmt(v) for v in ticks_nfg2])
-        st.plotly_chart(fig_nfg2, use_container_width=True)
-
-    if not nfg_nf.empty:
-        latest_nf_share = nfg_nf.iloc[-1]["Share %"]
-        gap = nf_target - latest_nf_share
-        color = "#2ecc71" if gap <= 0 else "#e74c3c"
-        st.markdown(f"<div style='background:rgba(46,204,113,0.08);border:1px solid #2a2a4a;border-radius:10px;padding:12px 18px;margin:8px 0'>"
-                    f"<span style='color:#D7BDE2;font-weight:700'>Current Non-Frag Share: </span>"
-                    f"<span style='color:{color};font-size:20px;font-weight:800'>{latest_nf_share:.1f}%</span>"
-                    f"<span style='color:#aaa;font-size:13px'> &nbsp;|&nbsp; Gap to {nf_target}% target: "
-                    f"<span style='color:{color};font-weight:700'>{gap:+.1f}pp</span></span></div>",
-                    unsafe_allow_html=True)
-
-    # Non-frag by category — top contributors
-    nfg_cats = nfg[nfg["Type"]=="Non-Fragrance"].groupby("Category").agg(
-        Final_Sale=("Final Sale Amount","sum"), Units=("Final Sale Units","sum")
-    ).reset_index().sort_values("Final_Sale", ascending=False).head(10)
-    fig_nfg_cats = px.bar(nfg_cats, x="Category", y="Final_Sale",
-        color="Final_Sale", color_continuous_scale=["#1a4a1a","#2ecc71"],
-        template="plotly_dark", title="Top Non-Frag Categories",
-        labels={"Final_Sale":"Final Sale (₹)"})
-    max_nfc = nfg_cats["Final_Sale"].max() if not nfg_cats.empty else 1
-    ticks_nfc = [max_nfc*i/5 for i in range(6)]
-    fig_nfg_cats.update_yaxes(tickvals=ticks_nfc, ticktext=["₹"+indian_fmt(v) for v in ticks_nfc])
-    fig_nfg_cats.update_xaxes(tickangle=45)
-    st.plotly_chart(fig_nfg_cats, use_container_width=True)
-
-    # ════════════════════════════════════════════════════════════════════
-    # K. BRAND CONTRIBUTION TREND
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown("<div id='brand_trend'></div>", unsafe_allow_html=True)
-    sec_hdr("📊 Brand Contribution Trend","brand_trend")
-
-    bct = df.copy()
-    bct["Order Date"] = pd.to_datetime(bct["Order Date"])
-    bct["Week"] = bct["Order Date"].dt.to_period("W").apply(lambda r: r.start_time)
-    bct_grp = bct.groupby(["Week","Brand"])["Final Sale Amount"].sum().reset_index()
-    bct_total = bct_grp.groupby("Week")["Final Sale Amount"].sum().reset_index().rename(columns={"Final Sale Amount":"Total"})
-    bct_grp = bct_grp.merge(bct_total, on="Week")
-    bct_grp["Share %"] = (bct_grp["Final Sale Amount"]/bct_grp["Total"]*100).round(1)
-    bct_grp["Week_Str"] = bct_grp["Week"].dt.strftime("W/C %d %b")
-
-    bc1, bc2 = st.columns(2)
-    with bc1:
-        fig_bct = px.area(bct_grp, x="Week_Str", y="Final Sale Amount", color="Brand",
-            template="plotly_dark", title="Brand Revenue — Weekly Stacked Area",
-            color_discrete_map=BRAND_COLORS, labels={"Final Sale Amount":"Final Sale (₹)","Week_Str":"Week"})
-        max_bct = bct_grp.groupby("Week_Str")["Final Sale Amount"].sum().max() if not bct_grp.empty else 1
-        ticks_bct = [max_bct*i/5 for i in range(6)]
-        fig_bct.update_yaxes(tickvals=ticks_bct, ticktext=["₹"+indian_fmt(v) for v in ticks_bct])
-        fig_bct.update_xaxes(tickangle=45)
-        st.plotly_chart(fig_bct, use_container_width=True)
-
-    with bc2:
-        fig_bct2 = px.line(bct_grp, x="Week_Str", y="Share %", color="Brand",
-            template="plotly_dark", title="Brand Share % — Weekly Trend",
-            color_discrete_map=BRAND_COLORS, markers=True,
-            labels={"Share %":"Revenue Share %","Week_Str":"Week"})
-        fig_bct2.update_xaxes(tickangle=45)
-        st.plotly_chart(fig_bct2, use_container_width=True)
-
-    # ════════════════════════════════════════════════════════════════════
-    # L. WEEKLY BRAND PERFORMANCE MATRIX
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown("<div id='weekly_matrix'></div>", unsafe_allow_html=True)
-    sec_hdr("📋 Weekly Brand Performance Matrix","weekly_matrix")
-
-    wbm = df.copy()
-    wbm["Order Date"] = pd.to_datetime(wbm["Order Date"])
-    wbm["Week"] = wbm["Order Date"].dt.to_period("W").apply(lambda r: r.start_time).dt.strftime("W/C %d %b")
-
-    metric_choice = st.selectbox("Matrix Metric", ["Final Sale Amount","Cancellation Amount","Return Amount","Final Sale Units"], key="matrix_metric")
-
-    wbm_pivot = wbm.groupby(["Brand","Week"])[metric_choice].sum().reset_index()
-    wbm_pivot = wbm_pivot.pivot(index="Brand", columns="Week", values=metric_choice).fillna(0)
-
-    if not wbm_pivot.empty:
-        fig_wbm = px.imshow(wbm_pivot,
-            color_continuous_scale=["#0a0a14","#2a1a4a","#6C3483","#9B59B6","#D7BDE2"],
-            template="plotly_dark",
-            title=f"Brand × Week: {metric_choice}",
-            aspect="auto")
-        # Add value annotations
-        wbm_annotations = []
-        for i, brand in enumerate(wbm_pivot.index):
-            for j, week in enumerate(wbm_pivot.columns):
-                val = wbm_pivot.loc[brand, week]
-                wbm_annotations.append(dict(
-                    x=j, y=i,
-                    text="₹"+indian_fmt(val) if "Amount" in metric_choice else indian_fmt(val),
-                    showarrow=False,
-                    font=dict(size=9, color="white")
-                ))
-        fig_wbm.update_layout(annotations=wbm_annotations, height=max(250, len(wbm_pivot)*60))
-        st.plotly_chart(fig_wbm, use_container_width=True)
-
-        st.caption("💡 Scan left to right to spot which brands are growing week over week. Dark = low, bright = high.")
-
-        # WoW change matrix
-        with st.expander("📊 WoW % Change Matrix"):
-            wbm_cols = wbm_pivot.columns.tolist()
-            if len(wbm_cols) >= 2:
-                wbm_pct = wbm_pivot.copy()
-                for i in range(len(wbm_cols)-1, 0, -1):
-                    wbm_pct[wbm_cols[i]] = ((wbm_pivot[wbm_cols[i]] - wbm_pivot[wbm_cols[i-1]]) /
-                                             wbm_pivot[wbm_cols[i-1]].replace(0, np.nan) * 100).round(1)
-                wbm_pct = wbm_pct[wbm_cols[1:]]
-                fig_wbm_pct = px.imshow(wbm_pct,
-                    color_continuous_scale=["#e74c3c","#f39c12","#2ecc71"],
-                    color_continuous_midpoint=0,
-                    template="plotly_dark",
-                    title="WoW % Change by Brand × Week",
-                    aspect="auto")
-                pct_annotations = []
-                for i, brand in enumerate(wbm_pct.index):
-                    for j, week in enumerate(wbm_pct.columns):
-                        val = wbm_pct.loc[brand, week]
-                        if pd.notna(val):
-                            pct_annotations.append(dict(
-                                x=j, y=i,
-                                text=f"{val:+.1f}%",
-                                showarrow=False,
-                                font=dict(size=9, color="white")
-                            ))
-                fig_wbm_pct.update_layout(annotations=pct_annotations, height=max(250, len(wbm_pct)*60))
-                st.plotly_chart(fig_wbm_pct, use_container_width=True)
-    # ════════════════════════════════════════════════════════════════════
-    # 4-6. DOD / WOW / MOM — all use df (fully filtered)
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown("<div id='dod'></div>", unsafe_allow_html=True)
-    sec_hdr("📅 Day-on-Day (DoD) Analysis","dod")
-    dod=dod_data(df)
-    st.plotly_chart(combined_chart(dod,"Order Date","DoD: Final Sale (Bar) | Cancel & Returns (Line)"), use_container_width=True)
-    dd=dod.copy(); dd["Order Date"]=dd["Order Date"].dt.strftime("%d %b %Y")
-    dd=dd.rename(columns={"Final_Sale":"Final Sale (₹)","DoD_Sale_%":"DoD Sale %","Cancellation":"Cancel (₹)",
-                           "DoD_Cancel_%":"DoD Cancel %","Returns":"Returns (₹)","DoD_Return_%":"DoD Return %","Sale_Units":"Units"})
-    render_table(dd[["Order Date","Final Sale (₹)","DoD Sale %","Cancel (₹)","DoD Cancel %","Returns (₹)","DoD Return %","Units"]],
-                 {"Final Sale (₹)":"₹{:,.0f}","DoD Sale %":"{:.1f}%","Cancel (₹)":"₹{:,.0f}",
-                  "DoD Cancel %":"{:.1f}%","Returns (₹)":"₹{:,.0f}","DoD Return %":"{:.1f}%","Units":"{:,.0f}"},
-                 pct_cols=["DoD Sale %","DoD Cancel %","DoD Return %"])
-
-    st.markdown("<div id='wow'></div>", unsafe_allow_html=True)
-    sec_hdr("📆 Week-on-Week (WoW) Analysis","wow")
-    if not has_wow: st.info("Need at least 2 weeks of data.")
-    else:
-        wow=wow_data(df); wow["Week_Str"]=wow["Week"].dt.strftime("W/C %d %b")
-        st.plotly_chart(combined_chart(wow,"Week_Str","WoW: Final Sale (Bar) | Cancel & Returns (Line)"), use_container_width=True)
-        wd=wow.copy(); wd["Week"]=wd["Week"].dt.strftime("W/C %d %b %Y")
-        wd=wd.rename(columns={"Final_Sale":"Final Sale (₹)","WoW_Sale_%":"WoW Sale %","Cancellation":"Cancel (₹)",
-                               "WoW_Cancel_%":"WoW Cancel %","Returns":"Returns (₹)","WoW_Return_%":"WoW Return %"})
-        render_table(wd[["Week","Final Sale (₹)","WoW Sale %","Cancel (₹)","WoW Cancel %","Returns (₹)","WoW Return %"]],
-                     {"Final Sale (₹)":"₹{:,.0f}","WoW Sale %":"{:.1f}%","Cancel (₹)":"₹{:,.0f}",
-                      "WoW Cancel %":"{:.1f}%","Returns (₹)":"₹{:,.0f}","WoW Return %":"{:.1f}%"},
-                     pct_cols=["WoW Sale %","WoW Cancel %","WoW Return %"])
-
-    st.markdown("<div id='mom'></div>", unsafe_allow_html=True)
-    sec_hdr("🗓️ Month-on-Month (MoM) Analysis","mom")
-    if not has_mom: st.info("📊 MoM activates with 2+ months of data.")
-    else:
-        mom=mom_data(df); mom["Month_Str"]=mom["Month"].dt.strftime("%b %Y")
-        st.plotly_chart(combined_chart(mom,"Month_Str","MoM: Final Sale (Bar) | Cancel & Returns (Line)"), use_container_width=True)
-        md=mom.copy(); md["Month"]=md["Month"].dt.strftime("%b %Y")
-        md=md.rename(columns={"Final_Sale":"Final Sale (₹)","MoM_Sale_%":"MoM Sale %","Cancellation":"Cancel (₹)",
-                               "MoM_Cancel_%":"MoM Cancel %","Returns":"Returns (₹)","MoM_Return_%":"MoM Return %"})
-        render_table(md[["Month","Final Sale (₹)","MoM Sale %","Cancel (₹)","MoM Cancel %","Returns (₹)","MoM Return %"]],
-                     {"Final Sale (₹)":"₹{:,.0f}","MoM Sale %":"{:.1f}%","Cancel (₹)":"₹{:,.0f}",
-                      "MoM Cancel %":"{:.1f}%","Returns (₹)":"₹{:,.0f}","MoM Return %":"{:.1f}%"},
-                     pct_cols=["MoM Sale %","MoM Cancel %","MoM Return %"])
-
-    # ════════════════════════════════════════════════════════════════════
-    # 7. DECLINING SKUs — uses df (fully filtered)
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown("<div id='declining'></div>", unsafe_allow_html=True)
-    sec_hdr("📉 Declining SKUs","declining")
-    dec=declining_skus(df)
-    if dec.empty: st.info("Need at least 2 weeks of data.")
-    else:
-        st.plotly_chart(px.bar(dec.head(15),x="SKU ID",y="Change %",color="Brand",template="plotly_dark",
-                               title="Top Declining SKUs (WoW %)",color_discrete_map=BRAND_COLORS,
-                               labels={"Change %":"WoW Change %"}), use_container_width=True)
-        cols_show=[c for c in ["SKU ID","Brand","Category","Channel","Prev Week","Last Week","Change %"] if c in dec.columns]
-        render_table(dec[cols_show],{"Prev Week":"₹{:,.0f}","Last Week":"₹{:,.0f}","Change %":"{:.1f}%"},pct_cols=["Change %"])
-
-    # ════════════════════════════════════════════════════════════════════
-    # 8. ACTION POINTS — uses df (fully filtered)
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown("<div id='actions'></div>", unsafe_allow_html=True)
-    sec_hdr("🎯 Action Points","actions")
-    st.caption("Auto-generated based on filtered data. Updates with every upload.")
-    for i,a in enumerate(action_points(df),1): st.markdown(f"**{i}.** {a}")
-    st.markdown("#### Brand-wise Actions")
-    for b in sorted(df["Brand"].unique()):
-        bdf=df[df["Brand"]==b]
-        bdates=sorted(pd.to_datetime(bdf["Order Date"]).unique())
-        if bdates:
-            td2=bdf[pd.to_datetime(bdf["Order Date"])==bdates[-1]]
-            s2=td2["Final Sale Amount"].sum(); c2=td2["Cancellation Amount"].sum()
-            with st.expander(f"**{b}** — ₹{s2:,.0f} sale | ₹{c2:,.0f} cancel"):
-                for a in action_points(bdf): st.markdown(f"• {a}")
-
-    # ════════════════════════════════════════════════════════════════════
-    # 9. EXCLUSIVES
-    # ════════════════════════════════════════════════════════════════════
-    if excl_col:
-        st.markdown("<div id='exclusives'></div>", unsafe_allow_html=True)
-        sec_hdr("⭐ Exclusives Analysis","exclusives")
-        ex=df.copy(); ex["Is_Excl"]=ex[excl_col].astype(str).str.lower().isin(["yes","true","1","y","exclusive"])
-        eg=ex.groupby("Is_Excl").agg(Final_Sale=("Final Sale Amount","sum"),Cancellation=("Cancellation Amount","sum"),
-                                      Returns=("Return Amount","sum"),Units=("Final Sale Units","sum")).reset_index()
-        eg["Label"]=eg["Is_Excl"].map({True:"Exclusive",False:"Non-Exclusive"})
-        c1,c2=st.columns(2)
-        with c1: st.plotly_chart(px.bar(eg,x="Label",y=["Final_Sale","Cancellation","Returns"],barmode="group",template="plotly_dark",title="Exclusive vs Non-Exclusive"), use_container_width=True)
-        with c2: st.plotly_chart(px.pie(eg,values="Final_Sale",names="Label",title="Sale Share",template="plotly_dark"), use_container_width=True)
-        render_table(eg[["Label","Final_Sale","Cancellation","Returns","Units"]].rename(
-            columns={"Label":"Type","Final_Sale":"Final Sale (₹)","Cancellation":"Cancel (₹)","Returns":"Returns (₹)","Units":"Units Sold"}),
-            {"Final Sale (₹)":"₹{:,.0f}","Cancel (₹)":"₹{:,.0f}","Returns (₹)":"₹{:,.0f}","Units Sold":"{:,.0f}"})
-
-    # ════════════════════════════════════════════════════════════════════
-    # 10. EXTRA NUMERIC COLUMNS
-    # ════════════════════════════════════════════════════════════════════
-    extra_num=[c for c in df.columns if c not in REQUIRED_COLS+["Order Date","Channel"]
-               and pd.api.types.is_numeric_dtype(df[c])]
-    if extra_num:
-        st.markdown("---")
-        st.markdown("#### 📌 Additional Metrics")
-        cols=st.columns(min(len(extra_num),4))
-        for i,col in enumerate(extra_num):
-            with cols[i%4]: metric_card(col, df[col].sum())
-
-# ── SKU Master & Inventory ────────────────────────────────────────────────
-    if SKU_MODULE_OK:
-        render_sku_section()
-    else:
-        st.warning("⚠️ SKU module not loaded.")
-
-if __name__ == "__main__":
-    main()
+# ═══════════════════════════════════════════════════════════════
+# FOOTER
+# ═══════════════════════════════════════════════════════════════
+st.markdown("<br><hr style='border-color:#1e1e40'>", unsafe_allow_html=True)
+st.markdown(f"""
+<div style='text-align:center;color:#444466;font-size:11px;padding:10px 0'>
+    Flipkart Business Intelligence Dashboard · One Guardian · Enterprise Analytics Engine<br>
+    Data: Jan–May 2026 · {len(earn):,} earn records · {len(search):,} search records · {len(master):,} SKU master records
+</div>""", unsafe_allow_html=True)
