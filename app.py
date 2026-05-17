@@ -1,67 +1,171 @@
-# ══════════════════════════════════════════════════════════════════════════════
-# HOW TO INTEGRATE
-# ──────────────────────────────────────────────────────────────────────────────
-# 1. Add the SIDEBAR UPLOADERS block inside your `with st.sidebar:` block,
-#    just after the existing "Upload Data" section.
-#
-# 2. Add the CONSTANTS + HELPERS block at module level (outside main()),
-#    just after your existing BRAND_COLORS / FRAG_KW constants.
-#
-# 3. Add the MAIN SECTION block inside main(), after your last existing section
-#    (after the Exclusives block, before the extra_num columns block).
-#
-# 4. Add the nav link to your existing nav_html loop:
-#    ("📦 SKU Master & Inventory", "sku_master")
-# ══════════════════════════════════════════════════════════════════════════════
+"""
+sku_master_section.py
+─────────────────────
+Drop this file next to your main app.py.
 
+Integration (3 lines in app.py):
+─────────────────────────────────
+  1. At the top of app.py, after your existing imports:
+        from sku_master_section import render_sku_sidebar, render_sku_section
 
-# ─────────────────────────────────────────────────────────────────────────────
-# BLOCK 1 — CONSTANTS & HELPERS  (paste at module level, after FRAG_KW)
-# ─────────────────────────────────────────────────────────────────────────────
+  2. Inside `with st.sidebar:`, after the first `st.markdown("---")`:
+        render_sku_sidebar()
 
-MASTER_GSHEET   = "Flipkart_SKU_Master_DB"
+  3. Inside main(), after the Exclusives block:
+        render_sku_section()
+
+  4. Add to your nav_html loop (optional):
+        ("📦 SKU Master & Inventory", "sku_master"),
+"""
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+import plotly.express as px
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+MASTER_GSHEET    = "Flipkart_SKU_Master_DB"
 INVENTORY_GSHEET = "Flipkart_Inventory_DB"
-LISTING_GSHEET  = "Flipkart_Listing_DB"
+LISTING_GSHEET   = "Flipkart_Listing_DB"
 
 BELLAVITA_ALL = [
     "BELLAVITA", "Bella vita organic", "Bellavita", "bella vita",
     "BELLA VITA ORGANIC", "bellavita", "Bella Vita Organic",
 ]
 
-def _norm_brands_master(df):
-    df = df.copy()
-    df["Brand"] = df["Brand"].astype(str).str.strip().apply(
-        lambda x: "Bellavita" if x in BELLAVITA_ALL else x
-    )
-    return df
+PIE_COLORS = [
+    "#9B59B6","#2ECC71","#E74C3C","#3498DB","#F39C12",
+    "#1ABC9C","#E91E63","#FF5722","#00BCD4","#8BC34A",
+    "#FF9800","#673AB7",
+]
+
+BRAND_COLORS = {
+    "Bellavita": "#9B59B6", "Kenaz": "#3498DB",
+    "Embarouge": "#E74C3C", "HipHop Skincare": "#2ECC71", "Guzz": "#F39C12",
+}
+
+HEALTH_COLORS = {
+    "🔴 OOS":          "#e74c3c",
+    "🟡 Low (<7d)":    "#f39c12",
+    "🟠 Medium (7-14d)":"#e67e22",
+    "🟢 Healthy":      "#2ecc71",
+}
 
 
-def _load_gsheet(client, name):
+# ── Shared helpers (re-declared locally so the module is self-contained) ──────
+def _indian_fmt(n):
     try:
-        sh = get_or_create_sheet(client, name)
-        data = sh.sheet1.get_all_records()
+        n = int(round(float(n)))
+        s = str(abs(n))
+        if len(s) <= 3:
+            return ("-" if n < 0 else "") + s
+        last3 = s[-3:]
+        rest = s[:-3]
+        groups = []
+        while len(rest) > 2:
+            groups.append(rest[-2:])
+            rest = rest[:-2]
+        if rest:
+            groups.append(rest)
+        result = ",".join(reversed(groups)) + "," + last3
+        return ("-" if n < 0 else "") + result
+    except Exception:
+        return str(n)
+
+
+def _metric_card(label, val, prefix="", suffix=""):
+    try:
+        vs = f"{prefix}{_indian_fmt(val)}{suffix}"
+    except Exception:
+        vs = str(val)
+    st.markdown(
+        f"""<div style='background:linear-gradient(135deg,#13132a,#1a1a35);
+            padding:16px 18px;border-radius:14px;border:1px solid #2a2a4a;
+            border-left:4px solid #6C3483;margin-bottom:8px;
+            box-shadow:0 4px 20px rgba(0,0,0,0.3)'>
+            <div style='color:#8888aa;font-size:11px;font-weight:500;
+                letter-spacing:0.5px;text-transform:uppercase;margin-bottom:5px'>{label}</div>
+            <div style='color:#fff;font-size:20px;font-weight:800'>{vs}</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_table(df, fmt=None, pct_cols=None):
+    fmt = fmt or {}
+    pct_cols = pct_cols or []
+    new_fmt = {}
+    for col, f in fmt.items():
+        if "₹" in str(f):
+            new_fmt[col] = lambda v, _f=f: (
+                "₹" + _indian_fmt(v) if pd.notna(v) and v != "" else "—"
+            )
+        else:
+            new_fmt[col] = f
+    styled = df.style.format(new_fmt, na_rep="—")
+    for col in pct_cols:
+        if col in df.columns:
+            fn = getattr(styled, "map", getattr(styled, "applymap", None))
+            def _color(v):
+                try:
+                    fv = float(str(v).replace("%", ""))
+                    if fv > 0:
+                        return "color:#2ecc71;font-weight:600"
+                    if fv < 0:
+                        return "color:#e74c3c;font-weight:600"
+                except Exception:
+                    pass
+                return ""
+            styled = fn(_color, subset=[col])
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+
+# ── GSheet helpers ─────────────────────────────────────────────────────────────
+def _get_client():
+    """Reuse the app's get_gsheet_client if available, else raise."""
+    import importlib, sys
+    # Try to grab it from the calling app's global scope
+    frame = sys._getframe(2)
+    globs = frame.f_globals
+    if "get_gsheet_client" in globs:
+        return globs["get_gsheet_client"]()
+    raise RuntimeError("get_gsheet_client not found — ensure sku_master_section is imported from app.py")
+
+
+def _get_or_create(client, name):
+    import gspread
+    try:
+        return client.open(name)
+    except gspread.SpreadsheetNotFound:
+        sh = client.create(name)
+        import streamlit as st
+        sh.share(st.secrets["gcp_service_account"]["client_email"],
+                 perm_type="user", role="writer")
+        return sh
+
+
+def _load_sheet(client, name):
+    try:
+        ws = _get_or_create(client, name).sheet1
+        data = ws.get_all_records()
         return pd.DataFrame(data) if data else pd.DataFrame()
     except Exception as e:
-        st.error(f"Load error [{name}]: {e}")
+        st.error(f"[{name}] load error: {e}")
         return pd.DataFrame()
 
 
-def _save_gsheet_overwrite(client, df, name):
-    """Overwrite the entire sheet — used for inventory/listing snapshots."""
-    sh = get_or_create_sheet(client, name)
-    ws = sh.sheet1
+def _overwrite_sheet(client, df, name):
+    ws = _get_or_create(client, name).sheet1
     df = df.copy().fillna("").astype(str)
     ws.clear()
     ws.update([df.columns.tolist()] + df.values.tolist())
     return len(df)
 
 
-def _save_master_upsert(client, new_df, name):
-    """FSN-keyed upsert for SKU Master (append new, skip existing)."""
-    sh = get_or_create_sheet(client, name)
-    ws = sh.sheet1
+def _upsert_master(client, new_df, name):
+    ws = _get_or_create(client, name).sheet1
     existing = ws.get_all_records()
-    new_df = _norm_brands_master(new_df.copy()).fillna("").astype(str)
+    new_df = _norm_brands(new_df.copy()).fillna("").astype(str)
     if not existing:
         ws.update([new_df.columns.tolist()] + new_df.values.tolist())
         return len(new_df), 0
@@ -74,117 +178,130 @@ def _save_master_upsert(client, new_df, name):
     return len(truly_new), len(new_df) - len(truly_new)
 
 
-@st.cache_data(ttl=300)
-def _build_merged_master(master_name, inv_name, listing_name):
-    """
-    Joins SKU Master + Inventory + Listing on FSN.
-    Returns a single wide DataFrame used by all sub-views.
-    """
-    client = get_gsheet_client()
+# ── Data helpers ───────────────────────────────────────────────────────────────
+def _norm_brands(df):
+    df = df.copy()
+    df["Brand"] = df["Brand"].astype(str).str.strip().apply(
+        lambda x: "Bellavita" if x in BELLAVITA_ALL else x
+    )
+    return df
 
-    df_m = _load_gsheet(client, master_name)
-    df_i = _load_gsheet(client, inv_name)
-    df_l = _load_gsheet(client, listing_name)
+
+def _agg_inventory(df_inv):
+    num_cols = [
+        "Live on Website", "Sales 7D", "Sales 14D", "Sales 30D",
+        "Sales 60D", "Sales 90D", "Flipkart Selling Price",
+        "Orders to Dispatch", "Damaged", "Returns Processing",
+    ]
+    for c in num_cols:
+        if c in df_inv.columns:
+            df_inv[c] = pd.to_numeric(df_inv[c], errors="coerce").fillna(0)
+
+    return df_inv.groupby("FSN").agg(
+        Sellable_Stock=("Live on Website", "sum"),
+        Sales_7D=("Sales 7D", "sum"),
+        Sales_14D=("Sales 14D", "sum"),
+        Sales_30D=("Sales 30D", "sum"),
+        Inv_Price=("Flipkart Selling Price", "first"),
+        Orders_Pending=("Orders to Dispatch", "sum"),
+        Damaged=("Damaged", "sum"),
+        Returns_Processing=("Returns Processing", "sum"),
+        Warehouses=("Warehouse Id", "nunique"),
+        Inv_Fulfillment=("Fulfilment Type",
+                         lambda x: " | ".join(x.dropna().astype(str).unique())),
+        F_Assured=("F Assured Badge", "first"),
+    ).reset_index()
+
+
+def _prep_listing(df_l):
+    if df_l.empty:
+        return pd.DataFrame()
+    df_l = df_l.copy()
+    # Handle both raw upload (verbose col names) and GSheet reload (short names)
+    rename_map = {
+        "Flipkart Serial Number": "FSN",
+        "Listing Status": "Listing_Status",
+        "Inactive Reason": "Inactive_Reason",
+        "Your Selling Price": "Listed_Price",
+        "System Stock count": "System_Stock",
+        "Fulfillment By": "Fulfillment_By",
+        "MRP": "MRP",
+    }
+    df_l = df_l.rename(columns={k: v for k, v in rename_map.items() if k in df_l.columns})
+    keep = [c for c in ["FSN", "Listing_Status", "Inactive_Reason",
+                         "Listed_Price", "System_Stock", "Fulfillment_By", "MRP"]
+            if c in df_l.columns]
+    df_l = df_l[keep].copy()
+    for c in ["Listed_Price", "System_Stock", "MRP"]:
+        if c in df_l.columns:
+            df_l[c] = pd.to_numeric(df_l[c], errors="coerce").fillna(0)
+    df_l["FSN"] = df_l["FSN"].astype(str)
+    return df_l.drop_duplicates("FSN")
+
+
+def _add_health(merged):
+    if "Sellable_Stock" not in merged.columns:
+        return merged
+    merged["Days_Cover"] = (
+        merged["Sellable_Stock"] / merged["Sales_7D"].replace(0, np.nan) * 7
+    ).round(0)
+
+    def _h(r):
+        s = r["Sellable_Stock"]
+        d = r["Days_Cover"]
+        if pd.isna(s) or s <= 0:
+            return "🔴 OOS"
+        if pd.notna(d) and d < 7:
+            return "🟡 Low (<7d)"
+        if pd.notna(d) and d < 14:
+            return "🟠 Medium (7-14d)"
+        return "🟢 Healthy"
+
+    merged["Stock_Health"] = merged.apply(_h, axis=1)
+    return merged
+
+
+@st.cache_data(ttl=300)
+def _build_merged(_master_name, _inv_name, _listing_name):
+    client = _get_client()
+    df_m = _load_sheet(client, _master_name)
+    df_i = _load_sheet(client, _inv_name)
+    df_l = _load_sheet(client, _listing_name)
 
     if df_m.empty:
         return pd.DataFrame()
 
     df_m.columns = df_m.columns.str.strip()
     df_m = df_m.loc[:, ~df_m.columns.str.startswith("Unnamed")]
-    df_m = _norm_brands_master(df_m)
-
-    # ── Aggregate inventory per FSN ──────────────────────────────────────────
-    if not df_i.empty:
-        num_inv = ["Live on Website", "Sales 7D", "Sales 14D", "Sales 30D",
-                   "Sales 60D", "Sales 90D", "Flipkart Selling Price",
-                   "Orders to Dispatch", "Damaged", "Returns Processing",
-                   "Reserved for Orders and Recalls"]
-        for c in num_inv:
-            if c in df_i.columns:
-                df_i[c] = pd.to_numeric(df_i[c], errors="coerce").fillna(0)
-
-        inv_agg = df_i.groupby("FSN").agg(
-            Sellable_Stock=("Live on Website", "sum"),
-            Sales_7D=("Sales 7D", "sum"),
-            Sales_14D=("Sales 14D", "sum"),
-            Sales_30D=("Sales 30D", "sum"),
-            Inv_Price=("Flipkart Selling Price", "first"),
-            Orders_Pending=("Orders to Dispatch", "sum"),
-            Damaged=("Damaged", "sum"),
-            Returns_Processing=("Returns Processing", "sum"),
-            Warehouses=("Warehouse Id", "nunique"),
-            Inv_Fulfillment=("Fulfilment Type",
-                             lambda x: " | ".join(x.dropna().astype(str).unique())),
-            F_Assured=("F Assured Badge", "first"),
-        ).reset_index()
-        inv_agg["FSN"] = inv_agg["FSN"].astype(str)
-    else:
-        inv_agg = pd.DataFrame()
-
-    # ── Listing (first data row = idx 1 because row 0 is descriptions) ───────
-    if not df_l.empty:
-        # When loaded from GSheets the header is already correct
-        lst = df_l.copy()
-        lst["FSN"] = lst.get("Flipkart Serial Number", pd.Series(dtype=str)).astype(str)
-        lst = lst.rename(columns={
-            "Listing Status": "Listing_Status",
-            "Inactive Reason": "Inactive_Reason",
-            "Your Selling Price": "Listed_Price",
-            "System Stock count": "System_Stock",
-            "Fulfillment By": "Fulfillment_By",
-        })
-        lst_cols = [c for c in ["FSN", "Listing_Status", "Inactive_Reason",
-                                 "Listed_Price", "System_Stock", "Fulfillment_By"] if c in lst.columns]
-        lst = lst[lst_cols].drop_duplicates("FSN")
-        for c in ["Listed_Price", "System_Stock"]:
-            if c in lst.columns:
-                lst[c] = pd.to_numeric(lst[c], errors="coerce").fillna(0)
-    else:
-        lst = pd.DataFrame()
-
-    # ── Merge ────────────────────────────────────────────────────────────────
+    df_m = _norm_brands(df_m)
     df_m["FSN"] = df_m["FSN"].astype(str)
+
     merged = df_m.copy()
-    if not inv_agg.empty:
+
+    if not df_i.empty:
+        inv_agg = _agg_inventory(df_i)
+        inv_agg["FSN"] = inv_agg["FSN"].astype(str)
         merged = merged.merge(inv_agg, on="FSN", how="left")
+
+    lst = _prep_listing(df_l)
     if not lst.empty:
         merged = merged.merge(lst, on="FSN", how="left")
 
-    # ── Derived ──────────────────────────────────────────────────────────────
-    if "Sellable_Stock" in merged.columns:
-        merged["Days_Cover"] = (
-            merged["Sellable_Stock"] / merged["Sales_7D"].replace(0, np.nan) * 7
-        ).round(0)
-
-        def _health(r):
-            s = r.get("Sellable_Stock", np.nan)
-            d = r.get("Days_Cover", np.nan)
-            if pd.isna(s) or s <= 0:
-                return "🔴 OOS"
-            if pd.notna(d) and d < 7:
-                return "🟡 Low (<7d)"
-            if pd.notna(d) and d < 14:
-                return "🟠 Medium (7-14d)"
-            return "🟢 Healthy"
-
-        merged["Stock_Health"] = merged.apply(_health, axis=1)
-
+    merged = _add_health(merged)
     return merged
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# BLOCK 2 — SIDEBAR UPLOADERS  (paste inside `with st.sidebar:` after "---")
-# ─────────────────────────────────────────────────────────────────────────────
-
-"""
-Paste this inside your existing `with st.sidebar:` block,
-right after the first `st.markdown("---")`:
-
+# ══════════════════════════════════════════════════════════════════════════════
+# PUBLIC — SIDEBAR
+# ══════════════════════════════════════════════════════════════════════════════
+def render_sku_sidebar():
+    """Call this inside `with st.sidebar:` in app.py."""
+    st.markdown("---")
     st.markdown("### 📦 SKU Master & Inventory")
 
-    # ── SKU Master ────────────────────────────────────────
+    # ── SKU Master ────────────────────────────────────────────────────────────
     master_up = st.file_uploader(
-        "SKU Master (.xlsx)", type=["xlsx","xls","csv"], key="sb_master"
+        "SKU Master (.xlsx / .csv)", type=["xlsx", "xls", "csv"], key="sb_master"
     )
     if master_up:
         try:
@@ -194,17 +311,17 @@ right after the first `st.markdown("---")`:
             raw_m = raw_m.loc[:, ~raw_m.columns.str.startswith("Unnamed")]
             st.info(f"📋 {len(raw_m):,} FSNs ready")
             if st.button("💾 Save SKU Master", key="sb_save_master"):
-                with st.spinner("Saving..."):
-                    cli = get_gsheet_client()
-                    added, dupes = _save_master_upsert(cli, raw_m, MASTER_GSHEET)
+                with st.spinner("Saving…"):
+                    cli = _get_client()
+                    added, dupes = _upsert_master(cli, raw_m, MASTER_GSHEET)
                 st.success(f"✅ {added} new | {dupes} existing skipped")
                 st.cache_data.clear()
         except Exception as e:
             st.error(f"Master error: {e}")
 
-    # ── Inventory ─────────────────────────────────────────
+    # ── Inventory ─────────────────────────────────────────────────────────────
     inv_up = st.file_uploader(
-        "Current Inventory (.csv/.xlsx)", type=["csv","xlsx","xls"], key="sb_inv"
+        "Current Inventory (.csv / .xlsx)", type=["csv", "xlsx", "xls"], key="sb_inv"
     )
     if inv_up:
         try:
@@ -212,18 +329,18 @@ right after the first `st.markdown("---")`:
                        else pd.read_excel(inv_up))
             raw_inv.columns = raw_inv.columns.str.strip()
             st.info(f"📦 {len(raw_inv):,} rows ready")
-            if st.button("💾 Save Inventory", key="sb_save_inv"):
-                with st.spinner("Saving..."):
-                    cli = get_gsheet_client()
-                    n = _save_gsheet_overwrite(cli, raw_inv, INVENTORY_GSHEET)
-                st.success(f"✅ {n:,} rows saved (snapshot replaced)")
+            if st.button("💾 Save Inventory (replaces snapshot)", key="sb_save_inv"):
+                with st.spinner("Saving…"):
+                    cli = _get_client()
+                    n = _overwrite_sheet(cli, raw_inv, INVENTORY_GSHEET)
+                st.success(f"✅ {n:,} rows saved")
                 st.cache_data.clear()
         except Exception as e:
             st.error(f"Inventory error: {e}")
 
-    # ── Listing ───────────────────────────────────────────
+    # ── Listing ───────────────────────────────────────────────────────────────
     lst_up = st.file_uploader(
-        "Listing Report (.xls/.xlsx/.csv)", type=["xls","xlsx","csv"], key="sb_lst"
+        "Listing Report (.xls / .xlsx / .csv)", type=["xls", "xlsx", "csv"], key="sb_lst"
     )
     if lst_up:
         try:
@@ -231,71 +348,73 @@ right after the first `st.markdown("---")`:
                 raw_lst = pd.read_csv(lst_up)
             elif lst_up.name.endswith(".xls"):
                 raw_lst = pd.read_excel(lst_up, engine="xlrd")
-                # Drop Flipkart's description row (row 0 after header)
-                if raw_lst.iloc[0]["Flipkart Serial Number"] in [np.nan, "Flipkart's Identifier of the product", None]:
+                # Flipkart puts a description row at index 0 — drop it
+                if str(raw_lst.iloc[0].get("Flipkart Serial Number", "")).startswith("Flipkart"):
                     raw_lst = raw_lst.iloc[1:].reset_index(drop=True)
             else:
                 raw_lst = pd.read_excel(lst_up)
             raw_lst.columns = raw_lst.columns.str.strip()
             st.info(f"🏷️ {len(raw_lst):,} listings ready")
-            if st.button("💾 Save Listing", key="sb_save_lst"):
-                with st.spinner("Saving..."):
-                    cli = get_gsheet_client()
-                    n = _save_gsheet_overwrite(cli, raw_lst, LISTING_GSHEET)
-                st.success(f"✅ {n:,} listings saved (snapshot replaced)")
+            if st.button("💾 Save Listing (replaces snapshot)", key="sb_save_lst"):
+                with st.spinner("Saving…"):
+                    cli = _get_client()
+                    n = _overwrite_sheet(cli, raw_lst, LISTING_GSHEET)
+                st.success(f"✅ {n:,} listings saved")
                 st.cache_data.clear()
         except Exception as e:
             st.error(f"Listing error: {e}")
 
-    st.markdown("---")
-"""
 
+# ══════════════════════════════════════════════════════════════════════════════
+# PUBLIC — MAIN SECTION
+# ══════════════════════════════════════════════════════════════════════════════
+def render_sku_section():
+    """Call this inside main() in app.py, after the Exclusives block."""
 
-# ─────────────────────────────────────────────────────────────────────────────
-# BLOCK 3 — MAIN SECTION  (paste inside main(), after the Exclusives section)
-# ─────────────────────────────────────────────────────────────────────────────
+    st.markdown("<div id='sku_master'></div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='margin-top:40px;margin-bottom:20px'>"
+        "<h2 style='color:#D7BDE2;font-size:22px;font-weight:700;margin:0;"
+        "padding-bottom:10px;border-bottom:2px solid;"
+        "border-image:linear-gradient(90deg,#6C3483,#2E86C1) 1;"
+        "letter-spacing:-0.3px'>📦 SKU Master & Inventory</h2></div>",
+        unsafe_allow_html=True,
+    )
 
-st.markdown("<div id='sku_master'></div>", unsafe_allow_html=True)
-sec_hdr("📦 SKU Master & Inventory", "sku_master")
+    dm = _build_merged(MASTER_GSHEET, INVENTORY_GSHEET, LISTING_GSHEET)
 
-# ── Load merged data ──────────────────────────────────────────────────────────
-df_all_skus = _build_merged_master(MASTER_GSHEET, INVENTORY_GSHEET, LISTING_GSHEET)
+    if dm.empty:
+        st.info("Upload SKU Master via the sidebar to activate this section.")
+        return
 
-if df_all_skus.empty:
-    st.info("Upload SKU Master (and optionally Inventory + Listing) using the sidebar uploaders above.")
-else:
-    has_inv = "Sellable_Stock" in df_all_skus.columns
-    has_lst = "Listing_Status" in df_all_skus.columns
+    has_inv = "Sellable_Stock" in dm.columns
+    has_lst = "Listing_Status" in dm.columns
 
-    # ── Global filters ────────────────────────────────────────────────────────
+    # ── Global filters ─────────────────────────────────────────────────────────
     gf1, gf2, gf3, gf4 = st.columns(4)
     with gf1:
         sm_brand = st.selectbox(
-            "Brand", ["All"] + sorted(df_all_skus["Brand"].dropna().unique().tolist()),
-            key="sm_brand"
+            "Brand", ["All"] + sorted(dm["Brand"].dropna().unique().tolist()), key="sm_brand"
         )
     with gf2:
         sm_cat = st.selectbox(
-            "Category", ["All"] + sorted(df_all_skus["Category"].dropna().unique().tolist()),
-            key="sm_cat"
+            "Category", ["All"] + sorted(dm["Category"].dropna().unique().tolist()), key="sm_cat"
         )
     with gf3:
-        all_ranges = sorted(df_all_skus["Range"].dropna().unique().tolist())
-        sm_range = st.selectbox("Range", ["All"] + all_ranges, key="sm_range")
+        sm_range = st.selectbox(
+            "Range", ["All"] + sorted(dm["Range"].dropna().unique().tolist()), key="sm_range"
+        )
     with gf4:
         sm_status = st.selectbox(
-            "Active/Discontinued", ["All", "ACTIVE", "INACTIVE"], key="sm_status"
+            "Status", ["All", "ACTIVE", "INACTIVE"], key="sm_status"
         )
 
-    dm = df_all_skus.copy()
     if sm_brand  != "All": dm = dm[dm["Brand"]  == sm_brand]
     if sm_cat    != "All": dm = dm[dm["Category"] == sm_cat]
     if sm_range  != "All": dm = dm[dm["Range"]   == sm_range]
     if sm_status != "All": dm = dm[dm["Active/Discontinued"] == sm_status]
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # TAB LAYOUT
-    # ══════════════════════════════════════════════════════════════════════════
+    # ── Tabs ──────────────────────────────────────────────────────────────────
     tab_cat, tab_range, tab_inv, tab_full = st.tabs([
         "🗂️ Category View",
         "🎯 Range View",
@@ -303,198 +422,197 @@ else:
         "📋 Full SKU Table",
     ])
 
-    # ──────────────────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
     # TAB 1 — CATEGORY VIEW
-    # ──────────────────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
     with tab_cat:
-        sec_label = "<div style='background:rgba(108,52,131,0.12);border:1px solid #2a2a4a;border-radius:10px;padding:9px 16px;margin:10px 0'><span style='font-size:14px;font-weight:700;color:#D7BDE2'>Category × Brand bifurcation</span></div>"
-        st.markdown(sec_label, unsafe_allow_html=True)
-
-        # KPI row
         ck1, ck2, ck3, ck4 = st.columns(4)
-        with ck1: metric_card("Total FSNs", len(dm), prefix="", suffix="")
-        with ck2: metric_card("Active", len(dm[dm["Active/Discontinued"] == "ACTIVE"]), prefix="", suffix="")
-        with ck3: metric_card("Categories", dm["Category"].nunique(), prefix="", suffix="")
-        with ck4: metric_card("Brands", dm["Brand"].nunique(), prefix="", suffix="")
+        with ck1: _metric_card("Total FSNs", len(dm))
+        with ck2: _metric_card("Active", (dm["Active/Discontinued"] == "ACTIVE").sum())
+        with ck3: _metric_card("Categories", dm["Category"].nunique())
+        with ck4: _metric_card("Brands", dm["Brand"].nunique())
 
         ca1, ca2 = st.columns(2)
-
-        # Category × Brand stacked bar
         with ca1:
-            cb_cnt = dm.groupby(["Category", "Brand"]).size().reset_index(name="FSN Count")
-            fig_cb = px.bar(
-                cb_cnt, x="Category", y="FSN Count", color="Brand",
-                template="plotly_dark", title="FSN Count — Category × Brand",
-                barmode="stack", color_discrete_map=BRAND_COLORS,
-                labels={"FSN Count": "No. of FSNs"},
+            cb_cnt = (
+                dm.groupby(["Category", "Brand"]).size()
+                  .reset_index(name="FSN Count")
             )
-            st.plotly_chart(fig_cb, use_container_width=True)
-
-        # Category share pie
+            st.plotly_chart(
+                px.bar(cb_cnt, x="Category", y="FSN Count", color="Brand",
+                       template="plotly_dark",
+                       title="FSN Count — Category × Brand",
+                       barmode="stack",
+                       color_discrete_map=BRAND_COLORS),
+                use_container_width=True,
+            )
         with ca2:
             cat_tot = dm.groupby("Category").size().reset_index(name="FSN Count")
             st.plotly_chart(
                 px.pie(cat_tot, values="FSN Count", names="Category",
-                       title="Category Share (FSN count)", template="plotly_dark",
+                       title="Category Share", template="plotly_dark",
                        color_discrete_sequence=PIE_COLORS, hole=0.4),
                 use_container_width=True,
             )
 
-        # Category × Sub-category drill
-        st.markdown("#### Category → Sub-category Breakdown")
-        cat_sub = dm.groupby(["Category", "Sub-category"]).agg(
-            FSNs=("FSN", "count"),
-        ).reset_index().sort_values(["Category", "FSNs"], ascending=[True, False])
-
-        if has_inv:
-            cat_sub_inv = dm.groupby(["Category", "Sub-category"]).agg(
-                OOS=("Stock_Health", lambda x: (x == "🔴 OOS").sum()),
-                Sellable=("Sellable_Stock", "sum"),
-                Sales_30D=("Sales_30D", "sum"),
-            ).reset_index()
-            cat_sub = cat_sub.merge(cat_sub_inv, on=["Category", "Sub-category"], how="left")
-
-        # Grouped bar - top sub-cats
-        top_sub = dm.groupby(["Sub-category", "Category"]).size().reset_index(name="FSNs") \
-                    .sort_values("FSNs", ascending=False).head(20)
+        # Sub-category bar
+        top_sub = (
+            dm.groupby(["Sub-category", "Category"]).size()
+              .reset_index(name="FSNs")
+              .sort_values("FSNs", ascending=False).head(20)
+        )
         fig_sub = px.bar(
             top_sub, x="Sub-category", y="FSNs", color="Category",
-            template="plotly_dark", title="Top 20 Sub-categories by FSN Count",
+            template="plotly_dark",
+            title="Top 20 Sub-categories by FSN Count",
             color_discrete_sequence=PIE_COLORS,
         )
         fig_sub.update_xaxes(tickangle=45)
         st.plotly_chart(fig_sub, use_container_width=True)
 
-        fmt_cat_sub = {"FSNs": "{:,.0f}"}
+        # Category → Sub-category table
+        cat_sub = (
+            dm.groupby(["Category", "Sub-category"]).size()
+              .reset_index(name="FSNs")
+              .sort_values(["Category", "FSNs"], ascending=[True, False])
+        )
         if has_inv:
-            fmt_cat_sub.update({"OOS": "{:,.0f}", "Sellable": "{:,.0f}", "Sales_30D": "{:,.0f}"})
-        render_table(cat_sub.reset_index(drop=True), fmt_cat_sub)
+            inv_sub = dm.groupby(["Category", "Sub-category"]).agg(
+                OOS=("Stock_Health", lambda x: (x == "🔴 OOS").sum()),
+                Sellable=("Sellable_Stock", "sum"),
+                Sales_30D=("Sales_30D", "sum"),
+            ).reset_index()
+            cat_sub = cat_sub.merge(inv_sub, on=["Category", "Sub-category"], how="left")
 
-        # Active vs Inactive by Category
-        st.markdown("#### Active vs Inactive by Category")
+        fmt_cs = {"FSNs": "{:,.0f}"}
+        if has_inv:
+            fmt_cs.update({"OOS": "{:,.0f}", "Sellable": "{:,.0f}", "Sales_30D": "{:,.0f}"})
+        _render_table(cat_sub.reset_index(drop=True), fmt_cs)
+
+        # Active vs Inactive
         act_cat = dm.groupby(["Category", "Active/Discontinued"]).size().reset_index(name="Count")
         st.plotly_chart(
             px.bar(act_cat, x="Category", y="Count",
                    color="Active/Discontinued",
                    color_discrete_map={"ACTIVE": "#2ecc71", "INACTIVE": "#e74c3c"},
                    template="plotly_dark",
-                   title="Active vs Inactive — Category wise",
+                   title="Active vs Inactive — by Category",
                    barmode="group"),
             use_container_width=True,
         )
 
-        # NPD / EPD / Exclusive breakdown
+        # NPD / EPD / Exclusive
         if "NPD /EPD/ Exclusive" in dm.columns:
-            st.markdown("#### NPD / EPD / Exclusive by Category")
-            npd_cat = dm.groupby(["Category", "NPD /EPD/ Exclusive"]).size().reset_index(name="FSNs")
+            npd = dm.groupby(["Category", "NPD /EPD/ Exclusive"]).size().reset_index(name="FSNs")
             st.plotly_chart(
-                px.bar(npd_cat, x="Category", y="FSNs",
+                px.bar(npd, x="Category", y="FSNs",
                        color="NPD /EPD/ Exclusive",
                        template="plotly_dark",
-                       title="EPD vs Exclusives — Category wise",
+                       title="EPD vs Exclusives — by Category",
                        barmode="stack",
                        color_discrete_sequence=PIE_COLORS),
                 use_container_width=True,
             )
 
-    # ──────────────────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
     # TAB 2 — RANGE VIEW
-    # ──────────────────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
     with tab_range:
-        st.markdown(
-            "<div style='background:rgba(46,204,113,0.08);border:1px solid #2a2a4a;border-radius:10px;"
-            "padding:9px 16px;margin:10px 0'>"
-            "<span style='font-size:14px;font-weight:700;color:#D7BDE2'>"
-            "Range × Category × Brand deep dive</span></div>",
-            unsafe_allow_html=True,
-        )
-
         rk1, rk2, rk3 = st.columns(3)
-        with rk1: metric_card("Ranges", dm["Range"].nunique(), prefix="", suffix="")
-        with rk2: metric_card("Avg SKUs/Range",
-                               round(len(dm) / max(dm["Range"].nunique(), 1), 1),
-                               prefix="", suffix="")
+        with rk1: _metric_card("Ranges", dm["Range"].nunique())
+        with rk2: _metric_card("Avg SKUs / Range", round(len(dm) / max(dm["Range"].nunique(), 1), 1))
         with rk3:
             if has_inv:
-                oos_ranges = dm[dm["Stock_Health"] == "🔴 OOS"]["Range"].nunique()
-                metric_card("Ranges with OOS", oos_ranges, prefix="", suffix="")
+                _metric_card("Ranges with OOS",
+                             dm[dm["Stock_Health"] == "🔴 OOS"]["Range"].nunique())
             else:
-                metric_card("Total SKUs", len(dm), prefix="", suffix="")
+                _metric_card("Total SKUs", len(dm))
 
-        # Range summary table
-        range_grp_cols = ["Range", "Brand", "Category"]
-        range_agg = dm.groupby(range_grp_cols).agg(
-            FSNs=("FSN", "count"),
-            Sizes=("Size/Qty", "nunique"),
-        ).reset_index()
-
-        if has_inv:
-            range_inv = dm.groupby(range_grp_cols).agg(
-                Sellable=("Sellable_Stock", "sum"),
-                Sales_7D=("Sales_7D", "sum"),
-                Sales_30D=("Sales_30D", "sum"),
-                OOS=("Stock_Health", lambda x: (x == "🔴 OOS").sum()),
-            ).reset_index()
-            range_agg = range_agg.merge(range_inv, on=range_grp_cols, how="left")
-
-        # Top ranges bubble / bar
         range_total = (
             dm.groupby("Range").size().reset_index(name="FSNs")
-              .sort_values("FSNs", ascending=False).head(25)
+              .sort_values("FSNs", ascending=False)
         )
+        top_rng = range_total["Range"].head(25).tolist()
 
         ra1, ra2 = st.columns(2)
         with ra1:
             fig_range = px.bar(
-                range_total, x="Range", y="FSNs",
-                color="FSNs", color_continuous_scale=["#2a1a4a", "#9B59B6"],
-                template="plotly_dark", title="Top Ranges by FSN Count",
+                range_total.head(25), x="Range", y="FSNs",
+                color="FSNs",
+                color_continuous_scale=["#2a1a4a", "#9B59B6"],
+                template="plotly_dark",
+                title="Top 25 Ranges by FSN Count",
             )
             fig_range.update_xaxes(tickangle=45)
             fig_range.update_layout(showlegend=False)
             st.plotly_chart(fig_range, use_container_width=True)
 
         with ra2:
-            # Range × Category heatmap
             rng_cat = dm.groupby(["Range", "Category"]).size().reset_index(name="FSNs")
-            rng_pivot = rng_cat.pivot(index="Range", columns="Category", values="FSNs").fillna(0)
-            # Limit to top 20 ranges
-            top_rng = range_total["Range"].head(20).tolist()
-            rng_pivot = rng_pivot.loc[[r for r in top_rng if r in rng_pivot.index]]
-            fig_heat_rng = px.imshow(
+            rng_pivot = (
+                rng_cat.pivot(index="Range", columns="Category", values="FSNs")
+                       .fillna(0)
+            )
+            rng_pivot = rng_pivot.loc[[r for r in top_rng if r in rng_pivot.index]].head(20)
+            fig_heat = px.imshow(
                 rng_pivot,
                 color_continuous_scale=["#0a0a14", "#2a1a4a", "#6C3483", "#9B59B6", "#D7BDE2"],
                 template="plotly_dark",
-                title="Range × Category Heatmap",
+                title="Range × Category Heatmap (FSN count)",
                 aspect="auto",
             )
             ann = []
             for i, rng in enumerate(rng_pivot.index):
                 for j, cat in enumerate(rng_pivot.columns):
-                    v = rng_pivot.loc[rng, cat]
+                    v = int(rng_pivot.loc[rng, cat])
                     if v > 0:
-                        ann.append(dict(x=j, y=i, text=str(int(v)),
+                        ann.append(dict(x=j, y=i, text=str(v),
                                         showarrow=False,
                                         font=dict(size=9, color="white")))
-            fig_heat_rng.update_layout(annotations=ann,
-                                        height=max(300, len(rng_pivot) * 28))
-            st.plotly_chart(fig_heat_rng, use_container_width=True)
+            fig_heat.update_layout(annotations=ann,
+                                   height=max(300, len(rng_pivot) * 28))
+            st.plotly_chart(fig_heat, use_container_width=True)
 
-        # Range × Size/Qty breakdown
-        st.markdown("#### Range × Size/Qty breakdown")
+        # Range × Size/Qty
         rng_size = dm.groupby(["Range", "Size/Qty"]).size().reset_index(name="FSNs")
-        rng_size_top = rng_size[rng_size["Range"].isin(top_rng)]
-        fig_rng_size = px.bar(
-            rng_size_top, x="Range", y="FSNs", color="Size/Qty",
+        rng_size = rng_size[rng_size["Range"].isin(top_rng)]
+        fig_rsize = px.bar(
+            rng_size, x="Range", y="FSNs", color="Size/Qty",
             template="plotly_dark",
-            title="Range — Size/Qty split (Top 20 Ranges)",
+            title="Range — Size/Qty split (Top 25 Ranges)",
             barmode="stack",
             color_discrete_sequence=PIE_COLORS,
         )
-        fig_rng_size.update_xaxes(tickangle=45)
-        st.plotly_chart(fig_rng_size, use_container_width=True)
+        fig_rsize.update_xaxes(tickangle=45)
+        st.plotly_chart(fig_rsize, use_container_width=True)
 
-        # Full range table with search
+        # Range × Brand
+        rng_brand = dm.groupby(["Range", "Brand"]).size().reset_index(name="FSNs")
+        rng_brand = rng_brand[rng_brand["Range"].isin(top_rng)]
+        fig_rb = px.bar(
+            rng_brand, x="Range", y="FSNs", color="Brand",
+            template="plotly_dark",
+            title="Range — Brand split (Top 25 Ranges)",
+            barmode="stack",
+            color_discrete_map=BRAND_COLORS,
+        )
+        fig_rb.update_xaxes(tickangle=45)
+        st.plotly_chart(fig_rb, use_container_width=True)
+
+        # Full range table
+        range_agg = dm.groupby(["Range", "Brand", "Category"]).agg(
+            FSNs=("FSN", "count"),
+            Sizes=("Size/Qty", "nunique"),
+        ).reset_index()
+        if has_inv:
+            range_inv = dm.groupby(["Range", "Brand", "Category"]).agg(
+                Sellable=("Sellable_Stock", "sum"),
+                Sales_7D=("Sales_7D", "sum"),
+                Sales_30D=("Sales_30D", "sum"),
+                OOS=("Stock_Health", lambda x: (x == "🔴 OOS").sum()),
+            ).reset_index()
+            range_agg = range_agg.merge(range_inv, on=["Range", "Brand", "Category"], how="left")
+
         rng_search = st.text_input("🔍 Filter Range table", key="rng_search")
         ra_show = range_agg.copy()
         if rng_search:
@@ -509,69 +627,45 @@ else:
                 "Sellable": "{:,.0f}", "Sales_7D": "{:,.0f}",
                 "Sales_30D": "{:,.0f}", "OOS": "{:,.0f}",
             })
-        render_table(ra_show.sort_values("FSNs", ascending=False).reset_index(drop=True), fmt_range)
+        _render_table(ra_show.sort_values("FSNs", ascending=False).reset_index(drop=True), fmt_range)
 
-    # ──────────────────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
     # TAB 3 — INVENTORY HEALTH
-    # ──────────────────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
     with tab_inv:
         if not has_inv:
-            st.info("Upload Inventory via the sidebar to see stock health. SKU Master is loaded — inventory snapshot missing.")
+            st.info("Upload Current Inventory via the sidebar to see stock health.")
         else:
-            st.markdown(
-                "<div style='background:rgba(231,76,60,0.08);border:1px solid #2a2a4a;"
-                "border-radius:10px;padding:9px 16px;margin:10px 0'>"
-                "<span style='font-size:14px;font-weight:700;color:#D7BDE2'>"
-                "Live stock health mapped to SKU Master</span></div>",
-                unsafe_allow_html=True,
-            )
-
-            # KPIs
             ik1, ik2, ik3, ik4, ik5 = st.columns(5)
-            with ik1: metric_card("Total FSNs", len(dm), prefix="", suffix="")
-            with ik2: metric_card("🔴 OOS",
-                                   len(dm[dm["Stock_Health"] == "🔴 OOS"]),
-                                   prefix="", suffix="")
-            with ik3: metric_card("🟡 Low (<7d)",
-                                   len(dm[dm["Stock_Health"] == "🟡 Low (<7d)"]),
-                                   prefix="", suffix="")
-            with ik4: metric_card("Sellable Units",
-                                   int(dm["Sellable_Stock"].fillna(0).sum()),
-                                   prefix="", suffix=" units")
-            with ik5: metric_card("Sales 7D",
-                                   int(dm["Sales_7D"].fillna(0).sum()),
-                                   prefix="", suffix=" units")
+            with ik1: _metric_card("Total FSNs", len(dm))
+            with ik2: _metric_card("🔴 OOS", (dm["Stock_Health"] == "🔴 OOS").sum())
+            with ik3: _metric_card("🟡 Low (<7d)", (dm["Stock_Health"] == "🟡 Low (<7d)").sum())
+            with ik4: _metric_card("Sellable Units", int(dm["Sellable_Stock"].fillna(0).sum()), suffix=" u")
+            with ik5: _metric_card("Sales 7D", int(dm["Sales_7D"].fillna(0).sum()), suffix=" u")
 
-            # Health distribution
             ia1, ia2 = st.columns(2)
             with ia1:
-                health_cnt = dm["Stock_Health"].value_counts().reset_index()
-                health_cnt.columns = ["Status", "Count"]
-                cmap = {
-                    "🔴 OOS": "#e74c3c",
-                    "🟡 Low (<7d)": "#f39c12",
-                    "🟠 Medium (7-14d)": "#e67e22",
-                    "🟢 Healthy": "#2ecc71",
-                }
+                hcnt = dm["Stock_Health"].value_counts().reset_index()
+                hcnt.columns = ["Status", "Count"]
                 st.plotly_chart(
-                    px.pie(health_cnt, values="Count", names="Status",
+                    px.pie(hcnt, values="Count", names="Status",
                            title="Stock Health Distribution",
                            template="plotly_dark",
-                           color="Status", color_discrete_map=cmap, hole=0.45),
+                           color="Status",
+                           color_discrete_map=HEALTH_COLORS,
+                           hole=0.45),
                     use_container_width=True,
                 )
-
             with ia2:
-                # Brand × health stacked bar
                 bh = dm.groupby(["Brand", "Stock_Health"]).size().reset_index(name="FSNs")
-                fig_bh = px.bar(
-                    bh, x="Brand", y="FSNs", color="Stock_Health",
-                    template="plotly_dark",
-                    title="Stock Health by Brand",
-                    barmode="stack",
-                    color_discrete_map=cmap,
+                st.plotly_chart(
+                    px.bar(bh, x="Brand", y="FSNs", color="Stock_Health",
+                           template="plotly_dark",
+                           title="Stock Health by Brand",
+                           barmode="stack",
+                           color_discrete_map=HEALTH_COLORS),
+                    use_container_width=True,
                 )
-                st.plotly_chart(fig_bh, use_container_width=True)
 
             # Category × health
             ch_grp = dm.groupby(["Category", "Stock_Health"]).size().reset_index(name="FSNs")
@@ -579,114 +673,108 @@ else:
                 px.bar(ch_grp, x="Category", y="FSNs", color="Stock_Health",
                        barmode="stack", template="plotly_dark",
                        title="Stock Health by Category",
-                       color_discrete_map=cmap),
+                       color_discrete_map=HEALTH_COLORS),
                 use_container_width=True,
             )
 
-            # Range × OOS heatmap
-            st.markdown("#### Range-wise OOS exposure")
-            rng_health = dm.groupby(["Range", "Stock_Health"]).size().reset_index(name="FSNs")
-            rng_oos = rng_health[rng_health["Stock_Health"] == "🔴 OOS"].sort_values("FSNs", ascending=False).head(20)
+            # Range OOS exposure
+            rng_oos = (
+                dm[dm["Stock_Health"] == "🔴 OOS"]
+                .groupby("Range").size().reset_index(name="OOS FSNs")
+                .sort_values("OOS FSNs", ascending=False).head(20)
+            )
             if not rng_oos.empty:
-                fig_rng_oos = px.bar(
-                    rng_oos, x="Range", y="FSNs",
-                    color="FSNs", color_continuous_scale=["#441a1a", "#e74c3c"],
+                fig_roos = px.bar(
+                    rng_oos, x="Range", y="OOS FSNs",
+                    color="OOS FSNs",
+                    color_continuous_scale=["#441a1a", "#e74c3c"],
                     template="plotly_dark",
                     title="Top Ranges with OOS FSNs",
                 )
-                fig_rng_oos.update_xaxes(tickangle=45)
-                st.plotly_chart(fig_rng_oos, use_container_width=True)
-            else:
-                st.success("No OOS FSNs in selected filters 🎉")
+                fig_roos.update_xaxes(tickangle=45)
+                st.plotly_chart(fig_roos, use_container_width=True)
 
-            # OOS drill table — sorted by Sales_30D desc (highest-selling OOS first)
-            with st.expander("🔴 OOS FSNs — sorted by 30D sales (act fast on these)"):
+            # OOS table — sorted by 30D sales (act on high-velocity OOS first)
+            with st.expander("🔴 OOS FSNs — sorted by 30D sales velocity"):
                 oos_df = dm[dm["Stock_Health"] == "🔴 OOS"].sort_values(
                     "Sales_30D", ascending=False
                 )
                 oos_cols = [c for c in [
                     "FSN", "Brand", "Category", "Range", "Size/Qty",
                     "Sellable_Stock", "Sales_7D", "Sales_30D",
-                    "Orders_Pending", "Listing_Status", "Active/Discontinued"
+                    "Orders_Pending", "Listing_Status", "Active/Discontinued",
                 ] if c in oos_df.columns]
-                render_table(
+                _render_table(
                     oos_df[oos_cols].reset_index(drop=True),
                     {"Sellable_Stock": "{:,.0f}", "Sales_7D": "{:,.0f}",
                      "Sales_30D": "{:,.0f}", "Orders_Pending": "{:,.0f}"},
                 )
 
-            # Low stock drill table
+            # Low stock table
             with st.expander("🟡 Low Stock FSNs (<7 days cover)"):
                 low_df = dm[dm["Stock_Health"] == "🟡 Low (<7d)"].sort_values("Days_Cover")
                 low_cols = [c for c in [
                     "FSN", "Brand", "Category", "Range", "Size/Qty",
                     "Sellable_Stock", "Days_Cover", "Sales_7D", "Sales_30D",
-                    "Inv_Fulfillment", "Active/Discontinued"
+                    "Inv_Fulfillment", "Active/Discontinued",
                 ] if c in low_df.columns]
-                render_table(
+                _render_table(
                     low_df[low_cols].reset_index(drop=True),
                     {"Sellable_Stock": "{:,.0f}", "Days_Cover": "{:.0f}",
                      "Sales_7D": "{:,.0f}", "Sales_30D": "{:,.0f}"},
                 )
 
-            # Velocity vs stock scatter
-            st.markdown("#### Velocity vs Stock (bubble = Sales 30D)")
-            scatter_df = dm[
-                dm["Sales_7D"].fillna(0) > 0
-            ].copy()
-            scatter_df["Sellable_Stock"] = scatter_df["Sellable_Stock"].fillna(0)
-            if not scatter_df.empty:
-                fig_sc = px.scatter(
-                    scatter_df.head(200),
-                    x="Sellable_Stock", y="Sales_7D",
-                    color="Stock_Health",
-                    size="Sales_30D",
-                    hover_data=["FSN", "Brand", "Range", "Category"],
-                    template="plotly_dark",
-                    title="Sellable Stock vs 7D Sales Velocity",
-                    color_discrete_map=cmap,
-                    labels={"Sellable_Stock": "Sellable Stock (units)", "Sales_7D": "Sales 7D (units)"},
+            # Velocity scatter
+            sc_df = dm[dm["Sales_7D"].fillna(0) > 0].copy()
+            if not sc_df.empty:
+                st.plotly_chart(
+                    px.scatter(
+                        sc_df.head(300),
+                        x="Sellable_Stock", y="Sales_7D",
+                        color="Stock_Health", size="Sales_30D",
+                        hover_data=["FSN", "Brand", "Range", "Category"],
+                        template="plotly_dark",
+                        title="Sellable Stock vs 7D Velocity",
+                        color_discrete_map=HEALTH_COLORS,
+                        labels={"Sellable_Stock": "Sellable (units)",
+                                "Sales_7D": "Sales 7D (units)"},
+                    ),
+                    use_container_width=True,
                 )
-                fig_sc.add_vline(x=0, line_dash="dash", line_color="#e74c3c",
-                                  annotation_text="OOS boundary")
-                st.plotly_chart(fig_sc, use_container_width=True)
 
-            # Listing status alignment check
+            # OOS but still ACTIVE listing — mismatch alert
             if has_lst:
-                st.markdown("#### ⚠️ Inventory vs Listing mismatch")
                 mismatch = dm[
                     (dm["Stock_Health"] == "🔴 OOS") &
                     (dm["Listing_Status"].astype(str).str.upper() == "ACTIVE")
                 ]
                 if not mismatch.empty:
-                    st.warning(f"{len(mismatch)} FSNs are OOS in inventory but still ACTIVE on listing!")
+                    st.warning(
+                        f"⚠️ {len(mismatch)} FSNs are OOS in inventory but "
+                        f"still **ACTIVE** on listing — check pricing / stock."
+                    )
                     m_cols = [c for c in [
                         "FSN", "Brand", "Range", "Category",
-                        "Sellable_Stock", "Listing_Status", "Inactive_Reason"
+                        "Sellable_Stock", "Listing_Status", "Inactive_Reason",
                     ] if c in mismatch.columns]
-                    render_table(mismatch[m_cols].reset_index(drop=True),
-                                 {"Sellable_Stock": "{:,.0f}"})
+                    _render_table(mismatch[m_cols].reset_index(drop=True),
+                                  {"Sellable_Stock": "{:,.0f}"})
                 else:
-                    st.success("No OOS + Active listing mismatch detected ✅")
+                    st.success("✅ No OOS + Active listing mismatches.")
 
-    # ──────────────────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
     # TAB 4 — FULL SKU TABLE
-    # ──────────────────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
     with tab_full:
-        st.markdown("#### 🔍 Full SKU Table — All master fields + live inventory")
-
-        # Column selector
-        all_possible = [c for c in [
+        all_cols = [c for c in [
             "FSN", "Title", "Brand", "Category", "Sub-category",
             "Range", "Size/Qty", "Vertical", "FULFILMENT TYPE",
             "MRP_Actual", "Master Category", "Gender",
             "NPD /EPD/ Exclusive", "Short Form", "EAN", "SKU ID",
             "Active/Discontinued", "Channel",
-            # Inventory
             "Sellable_Stock", "Sales_7D", "Sales_14D", "Sales_30D",
             "Days_Cover", "Stock_Health", "Orders_Pending", "Damaged",
             "Inv_Price", "Warehouses", "Inv_Fulfillment", "F_Assured",
-            # Listing
             "Listing_Status", "Inactive_Reason", "Listed_Price",
             "System_Stock", "Fulfillment_By",
         ] if c in dm.columns]
@@ -697,16 +785,12 @@ else:
             "Sales_30D", "Days_Cover", "Stock_Health", "Listing_Status",
         ] if c in dm.columns]
 
-        chosen_cols = st.multiselect(
-            "Choose columns to display",
-            options=all_possible,
-            default=default_cols,
-            key="full_sku_cols",
+        chosen = st.multiselect(
+            "Columns to display", options=all_cols, default=default_cols, key="full_sku_cols"
         )
-
-        # Search
         ft_search = st.text_input("🔍 Search FSN / Title / Range / Brand", key="full_sku_search")
-        dm_show = dm[chosen_cols].copy() if chosen_cols else dm.copy()
+
+        dm_show = dm[chosen].copy() if chosen else dm.copy()
         if ft_search:
             mask = dm_show.apply(
                 lambda r: ft_search.lower() in " ".join(r.astype(str).values).lower(), axis=1
@@ -721,9 +805,9 @@ else:
         for c in ["Days_Cover"]:
             if c in dm_show.columns:
                 fmt_full[c] = "{:.0f}"
-        for c in ["Inv_Price", "Listed_Price", "MRP_Actual"]:
+        for c in ["Inv_Price", "Listed_Price", "MRP_Actual", "MRP"]:
             if c in dm_show.columns:
                 fmt_full[c] = "₹{:,.0f}"
 
-        render_table(dm_show.reset_index(drop=True), fmt_full)
+        _render_table(dm_show.reset_index(drop=True), fmt_full)
         st.caption(f"{len(dm_show):,} SKUs shown")
