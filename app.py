@@ -14,6 +14,8 @@ try:
     SKU_MODULE_OK = True
 except Exception as _e:
     SKU_MODULE_OK = False
+    import builtins
+    builtins._SKU_ERR = str(_e)
 
 st.set_page_config(
     page_title="Flipkart Sales Dashboard",
@@ -558,6 +560,8 @@ def main():
 
         if SKU_MODULE_OK:
             render_sku_sidebar()
+        else:
+            st.error(f"SKU error: {getattr(__import__('builtins'), '_SKU_ERR', 'unknown')}")
 
         st.markdown("---")
         st.markdown("### 🔧 Database Tools")
