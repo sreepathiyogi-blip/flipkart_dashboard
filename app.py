@@ -27,8 +27,8 @@ BRAND_COLORS = {
     "Started with Guzz": "#1ABC9C"
 }
 PALETTE = ["#9B59B6","#3498DB","#2ECC71","#E74C3C","#F39C12","#1ABC9C","#E91E63","#FF5722","#00BCD4","#8BC34A"]
-MONTH_ORDER = ['2026-01','2026-02','2026-03','2026-04','2026-05']
-MONTH_LABELS = {'2026-01':'Jan 26','2026-02':'Feb 26','2026-03':'Mar 26','2026-04':'Apr 26','2026-05':'May 26'}
+MONTH_ORDER = []  # populated after data loads
+MONTH_LABELS = {}  # populated after data loads
 
 # ─────────────────────────────────────────────
 # FORMATTING HELPERS
@@ -96,40 +96,39 @@ div[data-testid="stDataFrame"]{border-radius:10px!important;overflow:hidden!impo
 # ─────────────────────────────────────────────
 # DATA LOADING
 # ─────────────────────────────────────────────
-@st.cache_data
-def load_data():
-    earn = pd.read_excel('/mnt/user-data/uploads/JFMAM_26_earnmore_report__1_.xlsx')
-    search = pd.read_excel('/mnt/user-data/uploads/Search_Traffic_Report__1_.xlsx')
-    master = pd.read_excel('/mnt/user-data/uploads/Master_FSNs_Standardized_1.xlsx')
+import io
 
-    # EarnMore cleaning
+@st.cache_data(show_spinner="Loading data...")
+def load_data(eb, sb, mb):
+    earn = pd.read_excel(io.BytesIO(eb))
     earn['Order Date'] = pd.to_datetime(earn['Order Date'])
     earn['Month'] = earn['Order Date'].dt.to_period('M').astype(str)
     earn['Week'] = earn['Order Date'].dt.to_period('W').apply(lambda r: r.start_time.strftime('%Y-%m-%d'))
     earn['Channel'] = earn['Vertical'].apply(lambda v: 'Shopsy' if str(v).lower().startswith('shopsy') else 'National')
-    earn['Type'] = earn['Category'].apply(
-        lambda c: 'Fragrance' if any(k in str(c).lower() for k in FRAG_KW) else 'Non-Fragrance'
-    )
-    # Normalize brand
+    earn['Type'] = earn['Category'].apply(lambda c: 'Fragrance' if any(k in str(c).lower() for k in FRAG_KW) else 'Non-Fragrance')
     earn['Brand'] = earn['Brand'].replace({'Bellavita':'BELLAVITA','bella vita':'BELLAVITA','BELLA VITA ORGANIC':'Bella vita organic'})
     earn['Cancel_Rate'] = (earn['Cancellation Amount'] / (earn['Final Sale Amount'] + earn['Cancellation Amount'])).fillna(0) * 100
     earn['Return_Rate'] = (earn['Return Amount'] / (earn['Final Sale Amount'] + earn['Return Amount'])).fillna(0) * 100
 
-    # Search cleaning
-    search['Impression Date'] = pd.to_datetime(search['Impression Date'], errors='coerce')
-    search['Month'] = search['Impression Date'].dt.to_period('M').astype(str)
-    search['Brand'] = search['Brand'].replace({'Bellavita':'BELLAVITA'})
+    if sb is not None:
+        search = pd.read_excel(io.BytesIO(sb))
+        search['Impression Date'] = pd.to_datetime(search['Impression Date'], errors='coerce')
+        search['Month'] = search['Impression Date'].dt.to_period('M').astype(str)
+        search['Brand'] = search['Brand'].replace({'Bellavita':'BELLAVITA'})
+    else:
+        search = pd.DataFrame(columns=['Month','Brand','Product Views','Product Clicks','Sales','Revenue','Click Through Rate','Conversion Rate','SKU Id'])
 
-    # Master cleaning
-    master.columns = master.columns.str.strip()
-    master = master.rename(columns={
-        'Title ': 'Title', 'F  Subcat': 'F_Subcat', 'Master Category ': 'Master_Category',
-        'NPD /EPD/ Exclusive': 'Exclusive', 'Short Form ': 'Short_Form', 'FULFILMENT TYPE': 'Fulfilment_Type'
-    })
+    if mb is not None:
+        master = pd.read_excel(io.BytesIO(mb))
+        master.columns = master.columns.str.strip()
+        master = master.rename(columns={'Title ':'Title','F  Subcat':'F_Subcat','Master Category ':'Master_Category','NPD /EPD/ Exclusive':'Exclusive','Short Form ':'Short_Form','FULFILMENT TYPE':'Fulfilment_Type'})
+    else:
+        master = pd.DataFrame(columns=['SKU ID','Exclusive','Range','F_Subcat','Subcat 2','Master_Category','Gender','Active/Discontinued'])
 
     return earn, search, master
 
-earn, search, master = load_data()
+# placeholder — real call is inside sidebar after upload
+earn = search = master = None
 
 # ─────────────────────────────────────────────
 # SIDEBAR FILTERS
@@ -140,6 +139,27 @@ with st.sidebar:
         <div style='font-size:16px;font-weight:800;color:#D7BDE2;margin-top:4px'>Flipkart BI Dashboard</div>
         <div style='font-size:10px;color:#5555aa;letter-spacing:1.5px;text-transform:uppercase;margin-top:2px'>Enterprise Intelligence</div>
     </div><hr style='border-color:#1e1e40'>""", unsafe_allow_html=True)
+
+    st.markdown("### 📁 Upload Data Files")
+    f_earn   = st.file_uploader("📊 EarnMore Report",         type=["xlsx","xls"])
+    f_search = st.file_uploader("🔍 Search Traffic Report",   type=["xlsx","xls"])
+    f_master = st.file_uploader("📋 Master FSNs / Mapping",   type=["xlsx","xls"])
+
+    if not f_earn:
+        st.info("⬆️ Upload EarnMore Report to begin")
+        st.stop()
+
+    earn, search, master = load_data(
+        f_earn.read(),
+        f_search.read() if f_search else None,
+        f_master.read() if f_master else None,
+    )
+
+    # Build dynamic month labels from actual data
+    MONTH_ORDER.clear(); MONTH_LABELS.clear()
+    for m in sorted(earn['Month'].unique()):
+        MONTH_ORDER.append(m)
+        MONTH_LABELS[m] = pd.Period(m, freq='M').strftime('%b %y')
 
     st.markdown("### 🔍 Global Filters")
     months_available = sorted(earn['Month'].unique())
@@ -243,8 +263,11 @@ def compute_mom_growth(df_in, brand=None):
 def compute_mtd_extrapolation(df_in, brand=None):
     d = df_in.copy()
     if brand: d = d[d['Brand'] == brand]
-    may = d[d['Month'] == '2026-05']
-    apr = d[d['Month'] == '2026-04']
+    all_months = sorted(d['Month'].unique())
+    latest_month = all_months[-1] if all_months else None
+    prev_month = all_months[-2] if len(all_months) >= 2 else None
+    may = d[d['Month'] == latest_month] if latest_month else d.iloc[0:0]
+    apr = d[d['Month'] == prev_month] if prev_month else d.iloc[0:0]
     days_so_far = may['Order Date'].nunique()
     mtd_rev = may['Final Sale Amount'].sum()
     daily_rate = mtd_rev / days_so_far if days_so_far > 0 else 0
@@ -1179,8 +1202,10 @@ if nf_share < 20:
 kenaz_rev = df[df['Brand']=='Kenaz']['Final Sale Amount'].sum()
 kenaz_pct = kenaz_rev / total_rev * 100
 if kenaz_pct > 2:
+    kenaz_ctr = search_brand[search_brand['Brand']=='Kenaz']['CTR'].values
+    kenaz_ctr_str = f"{kenaz_ctr[0]:.1f}%" if len(kenaz_ctr) > 0 else "N/A"
     actions.append(("🟢 OPPORTUNITY", "Kenaz Showing Strong Growth Signal",
-                    f"Kenaz at {kenaz_pct:.1f}% revenue share with high search CTR ({search_brand[search_brand['Brand']=='Kenaz']['CTR'].values[0]:.1f}% if available). Scale: increase FBF coverage, boost ad spend by 30%, launch on Shopsy channel.",
+                    f"Kenaz at {kenaz_pct:.1f}% revenue share with search CTR {kenaz_ctr_str}. Scale: increase FBF coverage, boost ad spend by 30%, launch on Shopsy channel.",
                     "#2ecc71"))
 
 # Search efficiency
