@@ -19,6 +19,14 @@ Integration (3 lines in app.py):
 """
 
 import numpy as np
+import sys
+
+# Module-level client function — set via set_client_fn() from app.py
+_CLIENT_FN = None
+
+def set_client_fn(fn):
+    global _CLIENT_FN
+    _CLIENT_FN = fn
 import pandas as pd
 import streamlit as st
 import plotly.express as px
@@ -122,14 +130,10 @@ def _render_table(df, fmt=None, pct_cols=None):
 
 # ── GSheet helpers ─────────────────────────────────────────────────────────────
 def _get_client():
-    """Reuse the app's get_gsheet_client if available, else raise."""
-    import importlib, sys
-    # Try to grab it from the calling app's global scope
-    frame = sys._getframe(2)
-    globs = frame.f_globals
-    if "get_gsheet_client" in globs:
-        return globs["get_gsheet_client"]()
-    raise RuntimeError("get_gsheet_client not found — ensure sku_master_section is imported from app.py")
+    """Use the client function registered via set_client_fn()."""
+    if _CLIENT_FN is None:
+        raise RuntimeError("Call set_client_fn(get_gsheet_client) in app.py after importing this module.")
+    return _CLIENT_FN()
 
 
 def _get_or_create(client, name):
