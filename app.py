@@ -184,8 +184,22 @@ div[data-testid="column"]{min-width:0!important}
 # DATA LOADING
 # ─────────────────────────────────────────────
 @st.cache_data(show_spinner="Loading data...")
-def load_data(eb, sb, mb, lb=None, ib=None):
-    earn = pd.read_excel(io.BytesIO(eb))
+def load_data(eb, sb, mb, lb=None, ib=None,
+              eb_name="", sb_name="", mb_name="", lb_name="", ib_name=""):
+
+    def smart_read(b, name=""):
+        """Read bytes as CSV or Excel based on file extension, with fallback."""
+        if b is None:
+            return None
+        buf = io.BytesIO(b)
+        if str(name).lower().endswith(".csv"):
+            try:    return pd.read_csv(buf)
+            except: buf.seek(0); return pd.read_excel(buf)
+        else:
+            try:    return pd.read_excel(buf)
+            except: buf.seek(0); return pd.read_csv(buf)
+
+    earn = smart_read(eb, eb_name)
     earn['Order Date'] = pd.to_datetime(earn['Order Date'])
     earn['Month'] = earn['Order Date'].dt.to_period('M').astype(str)
     earn['Week'] = earn['Order Date'].dt.to_period('W').apply(lambda r: r.start_time.strftime('%Y-%m-%d'))
@@ -196,7 +210,7 @@ def load_data(eb, sb, mb, lb=None, ib=None):
     earn['Return_Rate'] = (earn['Return Amount'] / (earn['Final Sale Amount'] + earn['Return Amount'])).fillna(0) * 100
 
     if sb is not None:
-        search = pd.read_excel(io.BytesIO(sb))
+        search = smart_read(sb, sb_name)
         search['Impression Date'] = pd.to_datetime(search['Impression Date'], errors='coerce')
         search['Month'] = search['Impression Date'].dt.to_period('M').astype(str)
         search['Brand'] = search['Brand'].replace({'Bellavita':'BELLAVITA'})
@@ -204,30 +218,45 @@ def load_data(eb, sb, mb, lb=None, ib=None):
         search = pd.DataFrame(columns=['Month','Brand','Product Views','Product Clicks','Sales','Revenue','Click Through Rate','Conversion Rate','SKU Id'])
 
     if mb is not None:
-        master = pd.read_excel(io.BytesIO(mb))
-        master = master.rename(columns=lambda c: c.strip())
-        master = master.rename(columns={
-            'F  Subcat': 'F_Subcat',
-            'Master Category': 'Master_Category',
-            'NPD /EPD/ Exclusive': 'Exclusive',
-            'Short Form': 'Short_Form',
-            'FULFILMENT TYPE': 'Fulfilment_Type'
-        })
+        master = smart_read(mb, mb_name)
+        # Strip all column names
+        master = master.rename(columns=lambda c: str(c).strip())
+        # Flexible rename — handle variations in column naming
+        rename_map = {}
         for col in master.columns:
-            if 'subcat' in col.lower() and col not in ['Subcat 2','F_Subcat']:
-                master = master.rename(columns={col: 'F_Subcat'})
-                break
+            cl = col.lower().replace(' ','').replace('_','').replace('/','')
+            if 'fsubcat' in cl or ('subcat' in cl and 'subcat2' not in cl and '2' not in cl):
+                rename_map[col] = 'F_Subcat'
+            elif 'mastercategory' in cl or col == 'Master Category':
+                rename_map[col] = 'Master_Category'
+            elif 'npd' in cl or 'epd' in cl or 'exclusive' in cl:
+                rename_map[col] = 'Exclusive'
+            elif 'shortform' in cl or col in ['Short Form','Short_Form']:
+                rename_map[col] = 'Short_Form'
+            elif 'fulfilment' in cl or 'fulfillment' in cl:
+                rename_map[col] = 'Fulfilment_Type'
+            elif 'subcat2' in cl or '2' in cl and 'subcat' in cl:
+                rename_map[col] = 'Subcat 2'
+            elif col in ['F  Subcat','F Subcat']:
+                rename_map[col] = 'F_Subcat'
+        master = master.rename(columns=rename_map)
+        # Ensure SKU ID column exists
+        if 'SKU ID' not in master.columns:
+            for col in master.columns:
+                if 'sku' in col.lower() or 'fsn' in col.lower() or 'product' in col.lower():
+                    master = master.rename(columns={col: 'SKU ID'})
+                    break
     else:
         master = pd.DataFrame(columns=['SKU ID','Exclusive','Range','F_Subcat','Subcat 2','Master_Category','Gender','Active/Discontinued'])
 
     if lb is not None:
-        listing = pd.read_excel(io.BytesIO(lb))
+        listing = smart_read(lb, lb_name)
         listing.columns = listing.columns.str.strip()
     else:
         listing = pd.DataFrame(columns=['SKU ID','Total Inventory','Fulfillment Type'])
 
     if ib is not None:
-        live_inv = pd.read_excel(io.BytesIO(ib))
+        live_inv = smart_read(ib, ib_name)
         live_inv.columns = live_inv.columns.str.strip()
     else:
         live_inv = pd.DataFrame(columns=['SKU ID','FBF Inventory','B2B Scheduled Inventory'])
@@ -247,11 +276,11 @@ with st.sidebar:
     </div><hr style='border-color:#1e1e40'>""", unsafe_allow_html=True)
 
     st.markdown("### 📁 Upload Data Files")
-    f_earn    = st.file_uploader("📊 EarnMore Report",           type=["xlsx","xls"])
-    f_search  = st.file_uploader("🔍 Search Traffic Report",     type=["xlsx","xls"])
-    f_master  = st.file_uploader("📋 Master FSNs / Mapping",     type=["xlsx","xls"])
-    f_listing = st.file_uploader("📦 Listing File (Total Inv)",  type=["xlsx","xls"])
-    f_live    = st.file_uploader("🏭 Live Inventory (FBF/B2B)",  type=["xlsx","xls"])
+    f_earn    = st.file_uploader("📊 EarnMore Report",           type=["xlsx","xls","csv"])
+    f_search  = st.file_uploader("🔍 Search Traffic Report",     type=["xlsx","xls","csv"])
+    f_master  = st.file_uploader("📋 Master FSNs / Mapping",     type=["xlsx","xls","csv"])
+    f_listing = st.file_uploader("📦 Listing File (Total Inv)",  type=["xlsx","xls","csv"])
+    f_live    = st.file_uploader("🏭 Live Inventory (FBF/B2B)",  type=["xlsx","xls","csv"])
 
     if not f_earn:
         st.info("⬆️ Upload EarnMore Report to begin")
@@ -259,10 +288,15 @@ with st.sidebar:
 
     earn, search, master, listing, live_inv = load_data(
         f_earn.read(),
-        f_search.read() if f_search else None,
-        f_master.read() if f_master else None,
+        f_search.read()  if f_search  else None,
+        f_master.read()  if f_master  else None,
         f_listing.read() if f_listing else None,
-        f_live.read()   if f_live   else None,
+        f_live.read()    if f_live    else None,
+        eb_name=f_earn.name,
+        sb_name=f_search.name  if f_search  else "",
+        mb_name=f_master.name  if f_master  else "",
+        lb_name=f_listing.name if f_listing else "",
+        ib_name=f_live.name    if f_live    else "",
     )
 
     MONTH_ORDER.clear(); MONTH_LABELS.clear()
@@ -1157,8 +1191,33 @@ st.dataframe(mom_display, use_container_width=True)
 # ═══════════════════════════════════════════════════════════════
 section_header("Exclusives & Range Portfolio Analysis", "excl", "⭐")
 
-master_slim = master[['SKU ID','Exclusive','Range','F_Subcat','Subcat 2','Master_Category','Gender','Active/Discontinued']].copy()
-df_merged   = df.merge(master_slim, on='SKU ID', how='left')
+# Debug: show master columns so user can verify mapping
+with st.expander("🔧 Master File Column Debug (expand if Exclusives section errors)", expanded=False):
+    st.markdown(f"**Columns detected in Master file:** `{list(master.columns)}`")
+    st.markdown("**Expected columns:** `SKU ID, Exclusive, Range, F_Subcat, Subcat 2, Master_Category, Gender, Active/Discontinued`")
+    missing = [c for c in ['SKU ID','Exclusive','Range','F_Subcat','Subcat 2','Master_Category','Gender','Active/Discontinued'] if c not in master.columns]
+    if missing:
+        st.warning(f"Missing columns (will show as blank): {missing}")
+    else:
+        st.success("✅ All expected columns found.")
+
+
+# Only select master columns that actually exist after rename
+_master_want = ['SKU ID','Exclusive','Range','F_Subcat','Subcat 2','Master_Category','Gender','Active/Discontinued']
+_master_have = [c for c in _master_want if c in master.columns]
+if 'SKU ID' not in _master_have:
+    # Try to find SKU ID column under a different name
+    for _c in master.columns:
+        if 'sku' in _c.lower() or 'fsn' in _c.lower():
+            master = master.rename(columns={_c: 'SKU ID'})
+            _master_have = [c for c in _master_want if c in master.columns]
+            break
+master_slim = master[_master_have].copy() if _master_have else pd.DataFrame(columns=['SKU ID'])
+df_merged   = df.merge(master_slim, on='SKU ID', how='left') if 'SKU ID' in master_slim.columns else df.copy()
+# Fill missing master columns with NaN so downstream code doesn't crash
+for _mc in _master_want:
+    if _mc not in df_merged.columns:
+        df_merged[_mc] = None
 
 excl_sum = df_merged.groupby('Exclusive').agg(
     Revenue=('Final Sale Amount','sum'), Units=('Final Sale Units','sum'),
