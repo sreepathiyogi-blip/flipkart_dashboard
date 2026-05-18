@@ -174,6 +174,10 @@ div[data-testid="stDataFrame"]{border-radius:10px!important;overflow:hidden!impo
 .warning-box{background:rgba(231,76,60,0.1);border:1px solid rgba(231,76,60,0.35);border-radius:10px;padding:14px 18px;margin:10px 0}
 .success-box{background:rgba(46,204,113,0.1);border:1px solid rgba(46,204,113,0.35);border-radius:10px;padding:14px 18px;margin:10px 0}
 .info-box{background:rgba(52,152,219,0.1);border:1px solid rgba(52,152,219,0.35);border-radius:10px;padding:14px 18px;margin:10px 0}
+.metric-value{font-size:clamp(13px,1.5vw,22px)!important}
+.metric-label{font-size:clamp(9px,0.75vw,11px)!important}
+.metric-card{padding:14px 10px!important}
+div[data-testid="column"]{min-width:0!important}
 </style>""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
@@ -402,7 +406,13 @@ if sel_brand != 'All':   df_search_f = df_search_f[df_search_f['Brand'] == sel_b
 # HELPER FUNCTIONS
 # ─────────────────────────────────────────────
 def metric_card(label, value, delta=None, prefix="₹", suffix="", color="#6C3483"):
-    fmt_val = indian_fmt(value) if prefix == "₹" else f"{value:.1f}" if isinstance(value, float) else str(value)
+    if prefix == "₹":
+        fmt_val = indian_fmt(value)  # already includes ₹ symbol
+        prefix = ""
+    elif isinstance(value, float):
+        fmt_val = f"{value:.1f}"
+    else:
+        fmt_val = str(value)
     delta_html = f"<div class='metric-delta'>{delta}</div>" if delta else ""
     st.markdown(f"""<div class="metric-card" style="border-left-color:{color}">
         <div class="metric-label">{label}</div>
@@ -504,20 +514,22 @@ st.markdown(f"""
 # ═══════════════════════════════════════════════════════════════
 section_header("Executive Overview — Command Center", "exec", "🏢")
 
-c1,c2,c3,c4,c5,c6 = st.columns(6)
+c1,c2,c3 = st.columns(3)
 with c1: metric_card("Total Revenue", total_rev, color="#9B59B6")
 with c2: metric_card("Total Units", total_units, prefix="", color="#3498DB")
 with c3: metric_card("Net Sales Value", total_nsv, color="#2ECC71")
+c4,c5,c6 = st.columns(3)
 with c4: metric_card("Gross GMV", total_gmv, color="#F39C12")
 with c5: metric_card("Revenue Leakage", leakage, prefix="", suffix="%", color="#E74C3C")
 with c6: metric_card("FBF Revenue", fbf_rev, color="#1ABC9C")
 
 st.markdown("<br>", unsafe_allow_html=True)
 mtd, dr, proj, apr_r, proj_g = compute_mtd_extrapolation(df)
-ca,cb,cc,cd,ce = st.columns(5)
+ca,cb,cc = st.columns(3)
 with ca: metric_card("MTD Revenue", mtd, color="#9B59B6")
 with cb: metric_card("Daily Run Rate", dr, color="#3498DB")
 with cc: metric_card("Projected Month", proj, color="#2ECC71")
+cd,ce,_ = st.columns(3)
 with cd: metric_card("Prev Month", apr_r, color="#F39C12")
 with ce: metric_card("Proj. Growth", round(proj_g or 0,1), prefix="", suffix="%", color="#E74C3C" if (proj_g or 0)<0 else "#2ECC71")
 
