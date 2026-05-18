@@ -328,54 +328,71 @@ with st.sidebar:
         save_live_cb    = st.checkbox("🏭 Live Inventory → Live_Inventory tab",    value=False, key="cb_live")
 
         if st.button("💾 Append to Google Sheets", type="primary", key="gs_save"):
-            with st.spinner("Saving..."):
+            with st.spinner("Saving month-wise..."):
                 try:
                     client = get_gsheet_client()
                     results = []
 
                     if save_earn_cb and not earn.empty:
                         earn_save = earn.copy()
-                        drop_cols = [c for c in ['Cancel_Rate','Return_Rate','Month','Week','Channel','Type'] if c in earn_save.columns]
+                        drop_cols = [c for c in ['Cancel_Rate','Return_Rate','Week','Channel','Type'] if c in earn_save.columns]
                         earn_save = earn_save.drop(columns=drop_cols)
-                        added, skipped, total = save_sheet(
-                            client, gs_name, "EarnMore_Report", earn_save,
-                            key_cols=["Product Id","SKU ID","Order Date"]
-                        )
-                        results.append(f"📊 EarnMore: +{added:,} new rows | {skipped:,} dupes skipped | {total:,} total in sheet")
+                        # Save each month to its own tab: e.g. "Earn_Jan 26"
+                        months_in_data = sorted(earn_save['Month'].unique()) if 'Month' in earn_save.columns else []
+                        earn_save_clean = earn_save.drop(columns=['Month'], errors='ignore')
+                        for mon in months_in_data:
+                            mon_df = earn_save[earn_save['Month'] == mon].drop(columns=['Month'], errors='ignore')
+                            mon_label = pd.Period(mon, freq='M').strftime('%b %y')  # e.g. "Jan 26"
+                            tab_name  = f"Earn_{mon_label}"                         # e.g. "Earn_Jan 26"
+                            added, skipped, total = save_sheet(
+                                client, gs_name, tab_name, mon_df,
+                                key_cols=["Product Id","SKU ID","Order Date"]
+                            )
+                            results.append(f"📊 {tab_name}: +{added:,} new | {skipped:,} dupes | {total:,} total")
 
                     if save_search_cb and not search.empty:
                         search_save = search.copy()
-                        drop_cols = [c for c in ['Month'] if c in search_save.columns]
-                        search_save = search_save.drop(columns=drop_cols)
-                        added, skipped, total = save_sheet(
-                            client, gs_name, "Search_Traffic", search_save,
-                            key_cols=["SKU Id","Impression Date"]
-                        )
-                        results.append(f"🔍 Search: +{added:,} new rows | {skipped:,} dupes skipped | {total:,} total")
+                        months_in_search = sorted(search_save['Month'].unique()) if 'Month' in search_save.columns else []
+                        for mon in months_in_search:
+                            mon_df = search_save[search_save['Month'] == mon].drop(columns=['Month'], errors='ignore')
+                            mon_label = pd.Period(mon, freq='M').strftime('%b %y')
+                            tab_name  = f"Search_{mon_label}"
+                            added, skipped, total = save_sheet(
+                                client, gs_name, tab_name, mon_df,
+                                key_cols=["SKU Id","Impression Date"]
+                            )
+                            results.append(f"🔍 {tab_name}: +{added:,} new | {skipped:,} dupes | {total:,} total")
 
                     if save_master_cb and not master.empty:
                         added, skipped, total = save_sheet(
                             client, gs_name, "Master_FSNs", master,
                             key_cols=["SKU ID"]
                         )
-                        results.append(f"📋 Master: +{added:,} new rows | {skipped:,} dupes skipped | {total:,} total")
+                        results.append(f"📋 Master_FSNs: +{added:,} new | {skipped:,} dupes | {total:,} total")
 
                     if save_listing_cb and not listing.empty:
+                        # Listing is a snapshot — tab named with today's date
+                        import datetime
+                        today_label = datetime.date.today().strftime("%d %b %y")
+                        tab_name = f"Listing_{today_label}"
                         added, skipped, total = save_sheet(
-                            client, gs_name, "Listing_File", listing,
+                            client, gs_name, tab_name, listing,
                             key_cols=None
                         )
-                        results.append(f"📦 Listing: +{added:,} rows | {total:,} total")
+                        results.append(f"📦 {tab_name}: {added:,} rows saved")
 
                     if save_live_cb and not live_inv.empty:
+                        import datetime
+                        today_label = datetime.date.today().strftime("%d %b %y")
+                        tab_name = f"LiveInv_{today_label}"
                         added, skipped, total = save_sheet(
-                            client, gs_name, "Live_Inventory", live_inv,
+                            client, gs_name, tab_name, live_inv,
                             key_cols=None
                         )
-                        results.append(f"🏭 Live Inv: +{added:,} rows | {total:,} total")
+                        results.append(f"🏭 {tab_name}: {added:,} rows saved")
 
                     if results:
-                        st.success("✅ Appended successfully!")
+                        st.success(f"✅ Done! {len(results)} tab(s) updated.")
                         for r in results:
                             st.markdown(f"<div style='font-size:11px;color:#2ecc71;margin:2px 0'>• {r}</div>", unsafe_allow_html=True)
                         try:
