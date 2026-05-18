@@ -30,67 +30,65 @@ def get_gsheet_client():
     )
     return gspread.authorize(creds)
 
-def get_or_create_spreadsheet(client, name):
+def open_spreadsheet(client, name):
+    """Open an existing spreadsheet — NEVER creates one. Raises clear error if not found."""
     try:
         return client.open(name)
     except gspread.SpreadsheetNotFound:
-        sh = client.create(name)
-        sh.share(
-            st.secrets["gcp_service_account"]["client_email"],
-            perm_type="user", role="writer"
+        raise Exception(
+            f"Spreadsheet '{name}' not found. "
+            f"Please create it in Google Drive and share it with: "
+            f"{st.secrets['gcp_service_account']['client_email']}"
         )
-        return sh
 
-def get_or_create_worksheet(sh, title, rows=50000, cols=50):
+def get_or_add_tab(sh, title):
+    """Get existing tab or add a new one to the spreadsheet."""
     try:
         return sh.worksheet(title)
     except gspread.WorksheetNotFound:
-        return sh.add_worksheet(title=title, rows=rows, cols=cols)
+        return sh.add_worksheet(title=title, rows=50000, cols=50)
 
-def save_sheet(client, spreadsheet_name, sheet_name, df_to_save, mode="append", key_cols=None):
+def save_sheet(client, spreadsheet_name, sheet_name, df_to_save, key_cols=None):
     """
-    Save a dataframe to a named sheet tab.
-    mode='append'  → deduplicate by key_cols then append new rows
-    mode='replace' → clear and rewrite entire sheet
-    Returns (added, skipped, total)
+    Append new rows to a tab in an existing spreadsheet.
+    - Never creates the spreadsheet (must exist and be shared)
+    - Adds tab if it doesn't exist yet
+    - Deduplicates by key_cols before appending
+    Returns (added, skipped, total_in_sheet)
     """
     if df_to_save is None or df_to_save.empty:
         return 0, 0, 0
 
-    sh = get_or_create_spreadsheet(client, spreadsheet_name)
-    ws = get_or_create_worksheet(sh, sheet_name)
+    sh = open_spreadsheet(client, spreadsheet_name)
+    ws = get_or_add_tab(sh, sheet_name)
 
-    # Clean the dataframe
+    # Clean dataframe
     df_clean = df_to_save.copy()
     for col in df_clean.columns:
         if pd.api.types.is_datetime64_any_dtype(df_clean[col]):
             df_clean[col] = df_clean[col].dt.strftime("%Y-%m-%d")
     df_clean = df_clean.fillna("").astype(str)
 
-    if mode == "replace":
-        ws.clear()
-        ws.update([df_clean.columns.tolist()] + df_clean.values.tolist())
-        return len(df_clean), 0, len(df_clean)
-
-    # Append mode with deduplication
+    # Read existing data
     existing_data = ws.get_all_records()
+
     if not existing_data:
+        # Sheet tab is empty — write header + all rows
         ws.update([df_clean.columns.tolist()] + df_clean.values.tolist())
         return len(df_clean), 0, len(df_clean)
 
+    # Deduplicate against existing rows
     existing_df = pd.DataFrame(existing_data).astype(str)
-
-    if key_cols and all(k in existing_df.columns for k in key_cols) and \
-       all(k in df_clean.columns for k in key_cols):
-        ex_keys  = existing_df[key_cols].apply("_".join, axis=1)
-        new_keys = df_clean[key_cols].apply("_".join, axis=1)
+    if key_cols and all(k in existing_df.columns for k in key_cols) and        all(k in df_clean.columns for k in key_cols):
+        ex_keys   = existing_df[key_cols].apply("_".join, axis=1)
+        new_keys  = df_clean[key_cols].apply("_".join, axis=1)
         truly_new = df_clean[~new_keys.isin(ex_keys)]
     else:
         truly_new = df_clean
 
     skipped = len(df_clean) - len(truly_new)
     if len(truly_new) > 0:
-        ws.append_rows(truly_new.values.tolist())
+        ws.append_rows(truly_new.values.tolist(), value_input_option="USER_ENTERED")
 
     return len(truly_new), skipped, len(existing_data) + len(truly_new)
 
@@ -306,43 +304,44 @@ with st.sidebar:
 
     # ── GOOGLE SHEETS SAVE ───────────────────────────────────────
     st.markdown("<hr style='border-color:#1e1e40'>", unsafe_allow_html=True)
-    st.markdown("### 🗄️ Save to Google Sheets")
+    st.markdown("### 🗄️ Append to Google Sheets")
 
     if not GSHEETS_AVAILABLE:
         st.warning("Install `gspread` and `google-auth` to enable Google Sheets sync.")
     elif "gcp_service_account" not in st.secrets:
         st.info("💡 Add `gcp_service_account` to Streamlit secrets to enable Google Sheets.")
     else:
-        gs_name = st.text_input("📋 Spreadsheet Name", "Flipkart_BI_Database", key="gs_name")
+        gs_name = st.text_input("📋 Spreadsheet Name", "Flipkart_Sales_DB", key="gs_name")
 
-        # Which sheets to save
-        st.markdown("<div style='font-size:12px;color:#aaa;margin-bottom:4px'>Select sheets to save:</div>", unsafe_allow_html=True)
-        save_earn_cb    = st.checkbox("📊 EarnMore Report",         value=True,  key="cb_earn")
-        save_search_cb  = st.checkbox("🔍 Search Traffic Report",   value=True,  key="cb_search")
-        save_master_cb  = st.checkbox("📋 Master FSNs",             value=False, key="cb_master")
-        save_listing_cb = st.checkbox("📦 Listing File",            value=False, key="cb_listing")
-        save_live_cb    = st.checkbox("🏭 Live Inventory",          value=False, key="cb_live")
+        st.markdown("""<div style='background:rgba(52,152,219,0.1);border:1px solid rgba(52,152,219,0.3);
+            border-radius:8px;padding:8px 12px;font-size:11px;color:#85C1E9;margin:6px 0'>
+            ℹ️ The spreadsheet must already exist in Google Drive and be shared with the service account.
+            New rows are appended only — existing data is never overwritten.
+        </div>""", unsafe_allow_html=True)
 
-        save_mode = st.radio("Save mode", ["Append (deduplicate)", "Replace (overwrite)"],
-                             key="gs_mode", horizontal=True)
-        mode_val = "append" if "Append" in save_mode else "replace"
+        # Which tabs to append to
+        st.markdown("<div style='font-size:12px;color:#aaa;margin:6px 0 3px 0'>Select tabs to append:</div>", unsafe_allow_html=True)
+        save_earn_cb    = st.checkbox("📊 EarnMore Report → EarnMore_Report tab",  value=True,  key="cb_earn")
+        save_search_cb  = st.checkbox("🔍 Search Traffic → Search_Traffic tab",    value=True,  key="cb_search")
+        save_master_cb  = st.checkbox("📋 Master FSNs → Master_FSNs tab",          value=False, key="cb_master")
+        save_listing_cb = st.checkbox("📦 Listing File → Listing_File tab",        value=False, key="cb_listing")
+        save_live_cb    = st.checkbox("🏭 Live Inventory → Live_Inventory tab",    value=False, key="cb_live")
 
-        if st.button("💾 Save to Google Sheets", type="primary", key="gs_save"):
-            with st.spinner("Connecting to Google Sheets..."):
+        if st.button("💾 Append to Google Sheets", type="primary", key="gs_save"):
+            with st.spinner("Saving..."):
                 try:
                     client = get_gsheet_client()
                     results = []
 
                     if save_earn_cb and not earn.empty:
                         earn_save = earn.copy()
-                        # Drop computed helper cols before saving
-                        drop_cols = [c for c in ['Cancel_Rate','Return_Rate'] if c in earn_save.columns]
+                        drop_cols = [c for c in ['Cancel_Rate','Return_Rate','Month','Week','Channel','Type'] if c in earn_save.columns]
                         earn_save = earn_save.drop(columns=drop_cols)
                         added, skipped, total = save_sheet(
                             client, gs_name, "EarnMore_Report", earn_save,
-                            mode=mode_val, key_cols=["Product Id","SKU ID","Order Date"]
+                            key_cols=["Product Id","SKU ID","Order Date"]
                         )
-                        results.append(f"📊 EarnMore: +{added:,} rows | {skipped:,} dupes | {total:,} total")
+                        results.append(f"📊 EarnMore: +{added:,} new rows | {skipped:,} dupes skipped | {total:,} total in sheet")
 
                     if save_search_cb and not search.empty:
                         search_save = search.copy()
@@ -350,47 +349,45 @@ with st.sidebar:
                         search_save = search_save.drop(columns=drop_cols)
                         added, skipped, total = save_sheet(
                             client, gs_name, "Search_Traffic", search_save,
-                            mode=mode_val, key_cols=["SKU Id","Impression Date"]
+                            key_cols=["SKU Id","Impression Date"]
                         )
-                        results.append(f"🔍 Search: +{added:,} rows | {skipped:,} dupes | {total:,} total")
+                        results.append(f"🔍 Search: +{added:,} new rows | {skipped:,} dupes skipped | {total:,} total")
 
                     if save_master_cb and not master.empty:
                         added, skipped, total = save_sheet(
                             client, gs_name, "Master_FSNs", master,
-                            mode=mode_val, key_cols=["SKU ID"]
+                            key_cols=["SKU ID"]
                         )
-                        results.append(f"📋 Master: +{added:,} rows | {skipped:,} dupes | {total:,} total")
+                        results.append(f"📋 Master: +{added:,} new rows | {skipped:,} dupes skipped | {total:,} total")
 
                     if save_listing_cb and not listing.empty:
                         added, skipped, total = save_sheet(
                             client, gs_name, "Listing_File", listing,
-                            mode=mode_val, key_cols=None
+                            key_cols=None
                         )
                         results.append(f"📦 Listing: +{added:,} rows | {total:,} total")
 
                     if save_live_cb and not live_inv.empty:
                         added, skipped, total = save_sheet(
                             client, gs_name, "Live_Inventory", live_inv,
-                            mode=mode_val, key_cols=None
+                            key_cols=None
                         )
                         results.append(f"🏭 Live Inv: +{added:,} rows | {total:,} total")
 
                     if results:
-                        st.success("✅ Saved successfully!")
+                        st.success("✅ Appended successfully!")
                         for r in results:
-                            st.markdown(f"<div style='font-size:12px;color:#2ecc71'>• {r}</div>", unsafe_allow_html=True)
-                        # Show spreadsheet link
+                            st.markdown(f"<div style='font-size:11px;color:#2ecc71;margin:2px 0'>• {r}</div>", unsafe_allow_html=True)
                         try:
-                            c2 = get_gsheet_client()
-                            sh2 = c2.open(gs_name)
-                            st.markdown(f"<a href='{sh2.url}' target='_blank' style='font-size:12px;color:#3498db'>🔗 Open in Google Sheets</a>", unsafe_allow_html=True)
+                            sh2 = get_gsheet_client().open(gs_name)
+                            st.markdown(f"<a href='{sh2.url}' target='_blank' style='font-size:12px;color:#3498db'>🔗 Open Spreadsheet</a>", unsafe_allow_html=True)
                         except Exception:
                             pass
                     else:
-                        st.warning("No sheets selected to save.")
+                        st.warning("No tabs selected.")
 
                 except Exception as e:
-                    st.error(f"❌ Error: {e}")
+                    st.error(f"❌ {e}")
 
     st.markdown("### 🔍 Global Filters")
     months_available = sorted(earn['Month'].unique())
@@ -1205,16 +1202,12 @@ with st.expander("🔧 Master File Column Debug (expand if Exclusives section er
 # Only select master columns that actually exist after rename
 _master_want = ['SKU ID','Exclusive','Range','F_Subcat','Subcat 2','Master_Category','Gender','Active/Discontinued']
 _master_have = [c for c in _master_want if c in master.columns]
-if 'SKU ID' not in _master_have:
-    # Try to find SKU ID column under a different name
-    for _c in master.columns:
-        if 'sku' in _c.lower() or 'fsn' in _c.lower():
-            master = master.rename(columns={_c: 'SKU ID'})
-            _master_have = [c for c in _master_want if c in master.columns]
-            break
-master_slim = master[_master_have].copy() if _master_have else pd.DataFrame(columns=['SKU ID'])
-df_merged   = df.merge(master_slim, on='SKU ID', how='left') if 'SKU ID' in master_slim.columns else df.copy()
-# Fill missing master columns with NaN so downstream code doesn't crash
+master_slim  = master[_master_have].copy() if _master_have else pd.DataFrame(columns=['SKU ID'])
+if 'SKU ID' in master_slim.columns and 'SKU ID' in df.columns:
+    df_merged = df.merge(master_slim, on='SKU ID', how='left')
+else:
+    df_merged = df.copy()
+# Fill any missing master columns with None so downstream code never crashes
 for _mc in _master_want:
     if _mc not in df_merged.columns:
         df_merged[_mc] = None
