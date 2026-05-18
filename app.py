@@ -8,6 +8,92 @@ import warnings
 import io
 warnings.filterwarnings("ignore")
 
+# ─────────────────────────────────────────────
+# GOOGLE SHEETS HELPERS
+# ─────────────────────────────────────────────
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    GSHEETS_AVAILABLE = True
+except ImportError:
+    GSHEETS_AVAILABLE = False
+
+GSHEETS_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+
+@st.cache_resource
+def get_gsheet_client():
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"], scopes=GSHEETS_SCOPES
+    )
+    return gspread.authorize(creds)
+
+def get_or_create_spreadsheet(client, name):
+    try:
+        return client.open(name)
+    except gspread.SpreadsheetNotFound:
+        sh = client.create(name)
+        sh.share(
+            st.secrets["gcp_service_account"]["client_email"],
+            perm_type="user", role="writer"
+        )
+        return sh
+
+def get_or_create_worksheet(sh, title, rows=50000, cols=50):
+    try:
+        return sh.worksheet(title)
+    except gspread.WorksheetNotFound:
+        return sh.add_worksheet(title=title, rows=rows, cols=cols)
+
+def save_sheet(client, spreadsheet_name, sheet_name, df_to_save, mode="append", key_cols=None):
+    """
+    Save a dataframe to a named sheet tab.
+    mode='append'  → deduplicate by key_cols then append new rows
+    mode='replace' → clear and rewrite entire sheet
+    Returns (added, skipped, total)
+    """
+    if df_to_save is None or df_to_save.empty:
+        return 0, 0, 0
+
+    sh = get_or_create_spreadsheet(client, spreadsheet_name)
+    ws = get_or_create_worksheet(sh, sheet_name)
+
+    # Clean the dataframe
+    df_clean = df_to_save.copy()
+    for col in df_clean.columns:
+        if pd.api.types.is_datetime64_any_dtype(df_clean[col]):
+            df_clean[col] = df_clean[col].dt.strftime("%Y-%m-%d")
+    df_clean = df_clean.fillna("").astype(str)
+
+    if mode == "replace":
+        ws.clear()
+        ws.update([df_clean.columns.tolist()] + df_clean.values.tolist())
+        return len(df_clean), 0, len(df_clean)
+
+    # Append mode with deduplication
+    existing_data = ws.get_all_records()
+    if not existing_data:
+        ws.update([df_clean.columns.tolist()] + df_clean.values.tolist())
+        return len(df_clean), 0, len(df_clean)
+
+    existing_df = pd.DataFrame(existing_data).astype(str)
+
+    if key_cols and all(k in existing_df.columns for k in key_cols) and \
+       all(k in df_clean.columns for k in key_cols):
+        ex_keys  = existing_df[key_cols].apply("_".join, axis=1)
+        new_keys = df_clean[key_cols].apply("_".join, axis=1)
+        truly_new = df_clean[~new_keys.isin(ex_keys)]
+    else:
+        truly_new = df_clean
+
+    skipped = len(df_clean) - len(truly_new)
+    if len(truly_new) > 0:
+        ws.append_rows(truly_new.values.tolist())
+
+    return len(truly_new), skipped, len(existing_data) + len(truly_new)
+
 st.set_page_config(
     page_title="Flipkart Business Intelligence Dashboard",
     page_icon="🛒",
@@ -179,6 +265,94 @@ with st.sidebar:
     for m in sorted(earn['Month'].unique()):
         MONTH_ORDER.append(m)
         MONTH_LABELS[m] = pd.Period(m, freq='M').strftime('%b %y')
+
+    # ── GOOGLE SHEETS SAVE ───────────────────────────────────────
+    st.markdown("<hr style='border-color:#1e1e40'>", unsafe_allow_html=True)
+    st.markdown("### 🗄️ Save to Google Sheets")
+
+    if not GSHEETS_AVAILABLE:
+        st.warning("Install `gspread` and `google-auth` to enable Google Sheets sync.")
+    elif "gcp_service_account" not in st.secrets:
+        st.info("💡 Add `gcp_service_account` to Streamlit secrets to enable Google Sheets.")
+    else:
+        gs_name = st.text_input("📋 Spreadsheet Name", "Flipkart_BI_Database", key="gs_name")
+
+        # Which sheets to save
+        st.markdown("<div style='font-size:12px;color:#aaa;margin-bottom:4px'>Select sheets to save:</div>", unsafe_allow_html=True)
+        save_earn_cb    = st.checkbox("📊 EarnMore Report",         value=True,  key="cb_earn")
+        save_search_cb  = st.checkbox("🔍 Search Traffic Report",   value=True,  key="cb_search")
+        save_master_cb  = st.checkbox("📋 Master FSNs",             value=False, key="cb_master")
+        save_listing_cb = st.checkbox("📦 Listing File",            value=False, key="cb_listing")
+        save_live_cb    = st.checkbox("🏭 Live Inventory",          value=False, key="cb_live")
+
+        save_mode = st.radio("Save mode", ["Append (deduplicate)", "Replace (overwrite)"],
+                             key="gs_mode", horizontal=True)
+        mode_val = "append" if "Append" in save_mode else "replace"
+
+        if st.button("💾 Save to Google Sheets", type="primary", key="gs_save"):
+            with st.spinner("Connecting to Google Sheets..."):
+                try:
+                    client = get_gsheet_client()
+                    results = []
+
+                    if save_earn_cb and not earn.empty:
+                        earn_save = earn.copy()
+                        # Drop computed helper cols before saving
+                        drop_cols = [c for c in ['Cancel_Rate','Return_Rate'] if c in earn_save.columns]
+                        earn_save = earn_save.drop(columns=drop_cols)
+                        added, skipped, total = save_sheet(
+                            client, gs_name, "EarnMore_Report", earn_save,
+                            mode=mode_val, key_cols=["Product Id","SKU ID","Order Date"]
+                        )
+                        results.append(f"📊 EarnMore: +{added:,} rows | {skipped:,} dupes | {total:,} total")
+
+                    if save_search_cb and not search.empty:
+                        search_save = search.copy()
+                        drop_cols = [c for c in ['Month'] if c in search_save.columns]
+                        search_save = search_save.drop(columns=drop_cols)
+                        added, skipped, total = save_sheet(
+                            client, gs_name, "Search_Traffic", search_save,
+                            mode=mode_val, key_cols=["SKU Id","Impression Date"]
+                        )
+                        results.append(f"🔍 Search: +{added:,} rows | {skipped:,} dupes | {total:,} total")
+
+                    if save_master_cb and not master.empty:
+                        added, skipped, total = save_sheet(
+                            client, gs_name, "Master_FSNs", master,
+                            mode=mode_val, key_cols=["SKU ID"]
+                        )
+                        results.append(f"📋 Master: +{added:,} rows | {skipped:,} dupes | {total:,} total")
+
+                    if save_listing_cb and not listing.empty:
+                        added, skipped, total = save_sheet(
+                            client, gs_name, "Listing_File", listing,
+                            mode=mode_val, key_cols=None
+                        )
+                        results.append(f"📦 Listing: +{added:,} rows | {total:,} total")
+
+                    if save_live_cb and not live_inv.empty:
+                        added, skipped, total = save_sheet(
+                            client, gs_name, "Live_Inventory", live_inv,
+                            mode=mode_val, key_cols=None
+                        )
+                        results.append(f"🏭 Live Inv: +{added:,} rows | {total:,} total")
+
+                    if results:
+                        st.success("✅ Saved successfully!")
+                        for r in results:
+                            st.markdown(f"<div style='font-size:12px;color:#2ecc71'>• {r}</div>", unsafe_allow_html=True)
+                        # Show spreadsheet link
+                        try:
+                            c2 = get_gsheet_client()
+                            sh2 = c2.open(gs_name)
+                            st.markdown(f"<a href='{sh2.url}' target='_blank' style='font-size:12px;color:#3498db'>🔗 Open in Google Sheets</a>", unsafe_allow_html=True)
+                        except Exception:
+                            pass
+                    else:
+                        st.warning("No sheets selected to save.")
+
+                except Exception as e:
+                    st.error(f"❌ Error: {e}")
 
     st.markdown("### 🔍 Global Filters")
     months_available = sorted(earn['Month'].unique())
