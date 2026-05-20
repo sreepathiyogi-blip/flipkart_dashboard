@@ -18,6 +18,13 @@ try:
 except ImportError:
     GSHEETS_AVAILABLE = False
 
+try:
+    import snowflake.connector
+    from snowflake.connector.pandas_tools import write_pandas
+    SNOWFLAKE_AVAILABLE = True
+except ImportError:
+    SNOWFLAKE_AVAILABLE = False
+
 GSHEETS_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
@@ -91,6 +98,60 @@ def save_sheet(client, spreadsheet_name, sheet_name, df_to_save, key_cols=None):
         ws.append_rows(truly_new.values.tolist(), value_input_option="USER_ENTERED")
 
     return len(truly_new), skipped, len(existing_data) + len(truly_new)
+
+# ─────────────────────────────────────────────
+# SNOWFLAKE HELPERS
+# ─────────────────────────────────────────────
+def get_snowflake_conn():
+    """Connect to Snowflake using Streamlit secrets."""
+    sf = st.secrets["snowflake"]
+    return snowflake.connector.connect(
+        account   = sf["account"],
+        user      = sf["user"],
+        password  = sf["password"],
+        warehouse = sf.get("warehouse", "COMPUTE_WH"),
+        database  = sf.get("database", ""),
+        schema    = sf.get("schema", "PUBLIC"),
+        role      = sf.get("role", ""),
+    )
+
+def save_to_snowflake(conn, df, table_name, database, schema, if_exists="append"):
+    """
+    Save dataframe to a Snowflake table.
+    if_exists='append' → upsert/append rows
+    if_exists='replace' → drop and recreate table
+    """
+    if df is None or df.empty:
+        return 0
+
+    df_clean = df.copy()
+    # Snowflake column names must be uppercase, no spaces
+    df_clean.columns = [c.upper().replace(" ","_").replace("/","_").replace("-","_").replace("(","").replace(")","") for c in df_clean.columns]
+    # Convert datetime cols
+    for col in df_clean.columns:
+        if pd.api.types.is_datetime64_any_dtype(df_clean[col]):
+            df_clean[col] = df_clean[col].dt.strftime("%Y-%m-%d")
+    df_clean = df_clean.fillna("").astype(str)
+
+    cursor = conn.cursor()
+    full_table = f"{database}.{schema}.{table_name}"
+
+    if if_exists == "replace":
+        cursor.execute(f"DROP TABLE IF EXISTS {full_table}")
+
+    # Create table if not exists
+    cols_ddl = ", ".join([f'"{c}" VARCHAR' for c in df_clean.columns])
+    cursor.execute(f'CREATE TABLE IF NOT EXISTS {full_table} ({cols_ddl})')
+
+    # Write using write_pandas (bulk load)
+    success, nchunks, nrows, _ = write_pandas(
+        conn, df_clean, table_name.upper(),
+        database=database, schema=schema,
+        auto_create_table=True, overwrite=(if_exists=="replace")
+    )
+    cursor.close()
+    return nrows
+
 
 st.set_page_config(
     page_title="Flipkart Business Intelligence Dashboard",
@@ -405,6 +466,87 @@ with st.sidebar:
 
                 except Exception as e:
                     st.error(f"❌ {e}")
+
+    # ── SNOWFLAKE SAVE ───────────────────────────────────────────
+    st.markdown("<hr style='border-color:#1e1e40'>", unsafe_allow_html=True)
+    st.markdown("### ❄️ Save to Snowflake")
+
+    if not SNOWFLAKE_AVAILABLE:
+        st.info("Add `snowflake-connector-python` to requirements.txt to enable Snowflake.")
+    elif "snowflake" not in st.secrets:
+        st.markdown("""<div style='background:rgba(41,182,246,0.1);border:1px solid rgba(41,182,246,0.3);
+            border-radius:8px;padding:10px 12px;font-size:11px;color:#81D4FA;margin:6px 0'>
+            💡 Add <b>[snowflake]</b> to Streamlit secrets:<br>
+            <code>account = "your-account"</code><br>
+            <code>user = "your-user"</code><br>
+            <code>password = "your-password"</code><br>
+            <code>warehouse = "COMPUTE_WH"</code><br>
+            <code>database = "RAW_FLIPKART"</code><br>
+            <code>schema = "PUBLIC"</code>
+        </div>""", unsafe_allow_html=True)
+    else:
+        sf_secrets = st.secrets["snowflake"]
+        sf_db     = st.text_input("❄️ Database",  sf_secrets.get("database","RAW_FLIPKART"), key="sf_db")
+        sf_schema = st.text_input("📂 Schema",    sf_secrets.get("schema","PUBLIC"),         key="sf_schema")
+
+        st.markdown("<div style='font-size:12px;color:#aaa;margin:6px 0 3px 0'>Select tables to save (month-wise):</div>", unsafe_allow_html=True)
+        sf_earn_cb   = st.checkbox("📊 EarnMore → EARN_[MON] tables",   value=True,  key="sf_earn")
+        sf_search_cb = st.checkbox("🔍 Search → SEARCH_[MON] tables",   value=True,  key="sf_search")
+        sf_master_cb = st.checkbox("📋 Master FSNs → MASTER_FSNS",      value=False, key="sf_master")
+        sf_list_cb   = st.checkbox("📦 Listing → LISTING_SNAPSHOT",     value=False, key="sf_listing")
+        sf_live_cb   = st.checkbox("🏭 Live Inv → LIVE_INV_SNAPSHOT",   value=False, key="sf_live")
+
+        if st.button("❄️ Save to Snowflake", type="primary", key="sf_save"):
+            with st.spinner("Connecting to Snowflake..."):
+                try:
+                    conn = get_snowflake_conn()
+                    sf_results = []
+
+                    if sf_earn_cb and not earn.empty:
+                        earn_sf = earn.copy()
+                        drop_cols = [c for c in ['Cancel_Rate','Return_Rate','Week','Channel','Type'] if c in earn_sf.columns]
+                        earn_sf = earn_sf.drop(columns=drop_cols)
+                        months_in = sorted(earn_sf['Month'].unique()) if 'Month' in earn_sf.columns else []
+                        for mon in months_in:
+                            mon_label = pd.Period(mon, freq='M').strftime('%b_%y').upper()  # JAN_26
+                            table_name = f"EARN_{mon_label}"
+                            mon_df = earn_sf[earn_sf['Month']==mon].drop(columns=['Month'], errors='ignore')
+                            nrows = save_to_snowflake(conn, mon_df, table_name, sf_db, sf_schema, if_exists="append")
+                            sf_results.append(f"📊 {sf_db}.{sf_schema}.{table_name}: {nrows:,} rows")
+
+                    if sf_search_cb and not search.empty:
+                        search_sf = search.copy()
+                        months_in = sorted(search_sf['Month'].unique()) if 'Month' in search_sf.columns else []
+                        for mon in months_in:
+                            mon_label = pd.Period(mon, freq='M').strftime('%b_%y').upper()
+                            table_name = f"SEARCH_{mon_label}"
+                            mon_df = search_sf[search_sf['Month']==mon].drop(columns=['Month'], errors='ignore')
+                            nrows = save_to_snowflake(conn, mon_df, table_name, sf_db, sf_schema, if_exists="append")
+                            sf_results.append(f"🔍 {sf_db}.{sf_schema}.{table_name}: {nrows:,} rows")
+
+                    if sf_master_cb and not master.empty:
+                        nrows = save_to_snowflake(conn, master, "MASTER_FSNS", sf_db, sf_schema, if_exists="replace")
+                        sf_results.append(f"📋 {sf_db}.{sf_schema}.MASTER_FSNS: {nrows:,} rows")
+
+                    if sf_list_cb and not listing.empty:
+                        nrows = save_to_snowflake(conn, listing, "LISTING_SNAPSHOT", sf_db, sf_schema, if_exists="replace")
+                        sf_results.append(f"📦 {sf_db}.{sf_schema}.LISTING_SNAPSHOT: {nrows:,} rows")
+
+                    if sf_live_cb and not live_inv.empty:
+                        nrows = save_to_snowflake(conn, live_inv, "LIVE_INV_SNAPSHOT", sf_db, sf_schema, if_exists="replace")
+                        sf_results.append(f"🏭 {sf_db}.{sf_schema}.LIVE_INV_SNAPSHOT: {nrows:,} rows")
+
+                    conn.close()
+
+                    if sf_results:
+                        st.success(f"✅ Saved to Snowflake! {len(sf_results)} table(s) updated.")
+                        for r in sf_results:
+                            st.markdown(f"<div style='font-size:11px;color:#29B6F6;margin:2px 0'>• {r}</div>", unsafe_allow_html=True)
+                    else:
+                        st.warning("No tables selected.")
+
+                except Exception as e:
+                    st.error(f"❌ Snowflake error: {e}")
 
     st.markdown("### 🔍 Global Filters")
     months_available = sorted(earn['Month'].unique())
